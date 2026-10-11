@@ -38,6 +38,11 @@ HISTORY_HEADING = "更新履歴"
 # 将来、用途フォルダ以外のディレクトリをルートに置く場合はここへ追加する。
 IGNORED_DIRS: set[str] = set()
 
+# 検証・wiki/README更新の対象外にするPR。
+SKIP_TYPES = {"chore"}              # タイトルが `chore:` / `chore(scope):`
+# Dependabot の既定タイトルは「Bump ...」で `種別:` を持たないため、PR作者でも判定する。
+SKIP_AUTHORS = {"dependabot[bot]"}
+
 FOLDER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 TITLE_RE = re.compile(r"^\s*(?P<type>[A-Za-z]+)(?:\([^)]*\))?\s*:")
 
@@ -400,6 +405,16 @@ def pr_env() -> dict[str, str]:
     }
 
 
+def skip_reason(env: dict[str, str]) -> str | None:
+    """検証・wiki/README更新の対象外なら、その理由を返す。"""
+    if env["author"].casefold() in {a.casefold() for a in SKIP_AUTHORS}:
+        return f"PR作者が {env['author']} のため"
+    m = TITLE_RE.match(env["title"] or "")
+    if m and m.group("type").lower() in SKIP_TYPES:
+        return f"`{m.group('type').lower()}:` のPRのため"
+    return None
+
+
 def collect_errors(env: dict[str, str], files: list[tuple[str, str]]) -> tuple[dict, dict[str, str], list[str]]:
     info = analyze_pr(env["title"], files)
     errors = list(info["errors"])
@@ -418,6 +433,12 @@ def report_errors(errors: list[str]) -> None:
 
 def cmd_check(args: argparse.Namespace) -> int:
     env = pr_env()
+    reason = skip_reason(env)
+    if reason:
+        msg = f"スキップ: {reason}、検証は行いません。"
+        print(msg)
+        write_summary([f"### {msg}"])
+        return 0
     info, _, errors = collect_errors(env, read_files(args.files))
     if errors:
         report_errors(errors)
@@ -436,6 +457,10 @@ def cmd_check(args: argparse.Namespace) -> int:
 
 def cmd_publish(args: argparse.Namespace) -> int:
     env = pr_env()
+    reason = skip_reason(env)
+    if reason:
+        print(f"スキップ: {reason}、wiki / README は更新しません。")
+        return 0
     info, sections, errors = collect_errors(env, read_files(args.files))
     if errors:
         report_errors(errors)

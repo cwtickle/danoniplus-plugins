@@ -3,6 +3,8 @@ name: PR check
 # PRのタイトル・用途フォルダ・本文(add: の場合)を検証する。
 # ブランチ保護で、このジョブ(check-pr)を必須のステータスチェックにすると、
 # 形式の誤りをマージ前に止められます。
+# `chore:` のPRと Dependabot のPRは、スクリプト側(plugin_tool.py の SKIP_*)で検証をスキップします
+# (ジョブ自体は成功扱いになるので、必須チェックにしてもマージを妨げません)。
 
 on:
   pull_request:
@@ -35,4 +37,5 @@ jobs:
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         run: python3 .github/scripts/plugin_tool.py check --files "${RUNNER_TEMP}/files.tsv"

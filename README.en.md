@@ -19,7 +19,6 @@ Each custom JS lives in its own folder named after its purpose. See the "Wiki" l
 ```
 <name>/          … one folder per purpose (also used as the wiki page name)
   js/            … custom JS
-  css/           … custom CSS
   skin/          … CSS / JS for skins
 ```
 
@@ -28,7 +27,7 @@ Each custom JS lives in its own folder named after its purpose. See the "Wiki" l
 1. Create a folder named after the purpose, and put `js/` or `skin/` inside it with your files.
 2. Use one of these PR title formats. The folder name is detected from the changed files, so you don't need to put it in the title.
    - New: `add: description`
-   - Update: `update: description` / `fix: description` / `refactor: description`, etc. (anything other than `add:`)
+   - Update: `update: description` / `fix: description` / `refactor: description`, etc. (anything other than `add:` and `chore:`; see the notes below for `chore:`)
 3. For an `add:` PR, fill in the PR template headings (Overview / Supported Versions / Installation / Configuration / Notes / Screenshots, each written bilingually — keep the headings as they are). When merged, the wiki page and this list are created automatically.
 4. For an update PR, the PR title is appended to the page's update history in the wiki, and the "Last updated" column here is refreshed.
 
@@ -36,3 +35,4 @@ Notes:
 
 - A single PR can change only one purpose folder.
 - `remove:` (deletion) is not supported yet.
+- `chore:` PRs and Dependabot PRs are skipped: no validation and no wiki / README update (even if they touch a purpose folder).

@@ -22,7 +22,13 @@ concurrency:
 
 jobs:
   publish:
-    if: github.event.pull_request.merged == true
+    # chore: と Dependabot のPRは対象外。wikiのチェックアウト等も走らせないため、ここでも除外する
+    # (スクリプト側 plugin_tool.py の SKIP_* にも同じ判定があります。startsWith は大文字小文字を区別しません)。
+    if: >-
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.user.login != 'dependabot[bot]' &&
+      !startsWith(github.event.pull_request.title, 'chore:') &&
+      !startsWith(github.event.pull_request.title, 'chore(')
     runs-on: ubuntu-latest
     steps:
       # ベースブランチ(マージ済みの最新)
