@@ -26,10 +26,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # ベースブランチ(マージ済みの最新)
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # wiki(最初のページを手動で1つ作成しておかないと、このチェックアウトは失敗します)
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: ${{ github.repository }}.wiki
           path: wiki
