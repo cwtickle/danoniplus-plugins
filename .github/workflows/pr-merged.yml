@@ -15,6 +15,7 @@ on:
 permissions:
   contents: write
   pull-requests: read
+  actions: write   # 日次リリースの定期実行を再有効化するため
 
 concurrency:
   group: publish-plugin-docs
@@ -93,3 +94,11 @@ jobs:
             git pull --rebase origin "${BASE_REF}"
             git push origin "HEAD:${BASE_REF}"
           fi
+
+      # 日次リリース(daily-release.yml)の定期実行は、公開リポジトリで60日間活動がないと自動で無効化されます。
+      # 無効になっていても、マージのたびに有効へ戻します(すでに有効なら何も起きません)。
+      - name: Keep daily release schedule enabled
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow enable daily-release.yml --repo "${GITHUB_REPOSITORY}"

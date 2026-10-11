@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""danoniplus-plugins 用: PRの検証 (check) と、マージ後の wiki / README 更新 (publish)。
+"""danoniplus-plugins 用: PRの検証 (check)、マージ後の wiki / README 更新 (publish)、日次リリースの計画とノート生成 (plan-releases)。
 
 PRのタイトル・本文などは、シェルへ展開せず環境変数で受け取る:
   PR_TITLE, PR_BODY, PR_AUTHOR, PR_URL, PR_MERGED_AT, REPO, BASE_REF
@@ -11,10 +11,11 @@ PRのタイトル・本文などは、シェルへ展開せず環境変数で受
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 # ---------------------------------------------------------------- 設定
@@ -62,6 +63,7 @@ HEADERS = {
 COL_TYPE, COL_UPDATED = 1, 5  # 一覧表の列位置(0始まり)
 
 JST = timezone(timedelta(hours=9))
+DATE_TAG_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")  # 日次リリースのタグ(YYYY-MM-DD)
 ROW_NAME_RE = re.compile(r"^\|\s*\[(?P<name>[^\]]+)\]\(")
 
 
@@ -513,6 +515,137 @@ def cmd_publish(args: argparse.Namespace) -> int:
     return 0
 
 
+# ---------------------------------------------------------------- 日次リリース
+
+def set_output(name: str, value: str) -> None:
+    path = os.environ.get("GITHUB_OUTPUT")
+    if path:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(f"{name}={value}\n")
+    print(f"output: {name}={value}")
+
+
+def normalize_login(author: dict | None) -> str:
+    """`gh pr list --json author` は Bot を `app/dependabot` の形で返すため、`dependabot[bot]` に揃える。"""
+    login = ((author or {}).get("login") or "").strip()
+    if login.startswith("app/"):
+        login = login[len("app/"):] + "[bot]"
+    return login
+
+
+def jst_day(iso: str) -> str | None:
+    try:
+        return datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone(JST).strftime("%Y-%m-%d")
+    except (ValueError, AttributeError):
+        return None
+
+
+def load_prs(path: str) -> list[dict]:
+    """`gh pr list --json number,title,author,url,mergedAt,files` の出力を、扱いやすい形に変換する。"""
+    text = Path(path).read_text(encoding="utf-8").strip()
+    prs: list[dict] = []
+    for p in json.loads(text or "[]"):
+        prs.append({
+            "number": p.get("number") or 0,
+            "title": p.get("title") or "",
+            "author": normalize_login(p.get("author")),
+            "url": p.get("url") or "",
+            "day": jst_day(p.get("mergedAt") or ""),
+            "paths": [f.get("path", "") for f in (p.get("files") or [])],
+        })
+    return prs
+
+
+def release_entries(prs: list[dict], day: str) -> list[dict]:
+    """その日(JST)にマージされたリリース対象のPRを、(PR, 用途フォルダ)ごとの行にして返す。
+
+    対象外: chore: / Dependabot のPR、用途フォルダを変更していないPR。
+    """
+    entries: list[dict] = []
+    for pr in prs:
+        if pr["day"] != day:
+            continue
+        if skip_reason({"title": pr["title"], "author": pr["author"]}):
+            continue
+        m = TITLE_RE.match(pr["title"])
+        kind = "added" if m and m.group("type").lower() == "add" else "updated"
+        for folder in sorted(plugin_folders([("modified", p) for p in pr["paths"]])):
+            if FOLDER_RE.match(folder):
+                entries.append({**pr, "folder": folder, "kind": kind})
+    entries.sort(key=lambda e: (e["folder"].casefold(), e["number"]))
+    return entries
+
+
+def previous_date_tag(tags: list[str], day: str) -> str | None:
+    older = [t for t in tags if DATE_TAG_RE.match(t) and t < day]
+    return max(older) if older else None
+
+
+def build_release_notes(entries: list[dict], *, tag: str, repo: str, previous_tag: str | None) -> str:
+    def line(e: dict) -> str:
+        pr = f"[#{e['number']}]({e['url']})" if e["url"] else f"#{e['number']}"
+        who = f", by [@{e['author']}](https://github.com/{e['author']})" if e["author"] else ""
+        return (f"- **{e['folder']}** — {e['title']} ({pr}{who}) · "
+                f"[Wiki](https://github.com/{repo}/wiki/{e['folder']}) · "
+                f"[Source](https://github.com/{repo}/tree/{tag}/{e['folder']})")
+
+    out: list[str] = []
+    for kind, heading in (("added", "追加 / Added"), ("updated", "更新 / Updated")):
+        lines = [line(e) for e in entries if e["kind"] == kind]
+        if lines:
+            out += [f"### {heading}", ""] + lines + [""]
+    if previous_tag:
+        out.append(f"**Full Changelog**: https://github.com/{repo}/compare/{previous_tag}...{tag}")
+    return "\n".join(out).rstrip("\n") + "\n"
+
+
+def iter_days(first: str, last: str) -> list[str]:
+    """first〜last(両端を含む、YYYY-MM-DD)の日付を昇順で返す。"""
+    a, b = date.fromisoformat(first), date.fromisoformat(last)
+    return [(a + timedelta(days=i)).isoformat() for i in range((b - a).days + 1)]
+
+
+def cmd_plan_releases(args: argparse.Namespace) -> int:
+    """日次リリースの計画を作る(毎日の定期実行用)。
+
+    --from-day〜--to-day(JST)のうち、まだタグがなく、リリース対象のPRがあった日ごとに、
+    リリースノートを <out-dir>/<日付>.md に書き、その日付を昇順で <out-dir>/plan.txt に書き出す。
+    """
+    try:
+        days = iter_days(args.from_day, args.to_day)
+    except ValueError:
+        days = []
+    if not (DATE_TAG_RE.match(args.from_day) and DATE_TAG_RE.match(args.to_day)) or not 0 < len(days) <= 31:
+        log_error("--from-day / --to-day は YYYY-MM-DD 形式で、31日以内の期間を指定してください。")
+        return 1
+
+    repo = os.environ.get("REPO", "")
+    prs = load_prs(args.prs)
+    tags = Path(args.tags).read_text(encoding="utf-8").split() if args.tags else []
+    known = {t for t in tags if DATE_TAG_RE.match(t)}
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    planned: list[str] = []
+    for day in days:
+        if day in known:
+            print(f"{day}: タグが既にあるためスキップします。")
+            continue
+        entries = release_entries(prs, day)
+        if not entries:
+            print(f"{day}: リリース対象のPRがないためスキップします。")
+            continue
+        notes = build_release_notes(entries, tag=day, repo=repo, previous_tag=previous_date_tag(sorted(known), day))
+        (out_dir / f"{day}.md").write_text(notes, encoding="utf-8")
+        known.add(day)
+        planned.append(day)
+        print(f"{day}: {len(entries)} 件 → リリースを作成します。")
+
+    (out_dir / "plan.txt").write_text("".join(f"{d}\n" for d in planned), encoding="utf-8")
+    set_output("count", str(len(planned)))
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -527,6 +660,15 @@ def main() -> int:
     p.add_argument("--readme", default="README.md")
     p.add_argument("--readme-en", default="README.en.md")
     p.set_defaults(func=cmd_publish)
+
+    r = sub.add_parser("plan-releases", help="毎日の定期実行用。日次リリースを作る日と、そのリリースノートを用意する")
+    r.add_argument("--prs", required=True, help="gh pr list --json の出力(JSON)")
+    r.add_argument("--tags", help="既存タグの一覧(空白区切り/1行1タグ)")
+    r.add_argument("--from-day", required=True, help="対象期間の開始日(JST, YYYY-MM-DD)")
+    r.add_argument("--to-day", required=True, help="対象期間の終了日(JST, YYYY-MM-DD)")
+    r.add_argument("--out-dir", required=True, help="リリースノートと plan.txt の出力先")
+    r.set_defaults(func=cmd_plan_releases)
+
 
     args = parser.parse_args()
     return args.func(args)

@@ -36,3 +36,12 @@ Notes:
 - A single PR can change only one purpose folder.
 - `remove:` (deletion) is not supported yet.
 - `chore:` PRs and Dependabot PRs are skipped: no validation and no wiki / README update (even if they touch a purpose folder).
+
+## Releases
+
+Every day at around 0:15 (JST), the previous day's merged PRs are checked automatically. A release is created only for days on which a PR that changes a purpose folder was merged (`chore:` PRs and Dependabot PRs excluded). The tag is the date in JST, `YYYY-MM-DD`. The release notes list that day's merged PRs per purpose, split into "Added" and "Updated".
+
+- The tag points to the commit on main at the end of that day (24:00 JST). No matter how many PRs are merged in a day, there is one release, and tags are never moved.
+- Nothing is created on days without matching PRs. PRs that only change the README or CI are not counted.
+- If a run is missed, the last 7 days are caught up on the next run.
+- Running "Daily release" manually in Actions creates the release for one specified date (JST).
