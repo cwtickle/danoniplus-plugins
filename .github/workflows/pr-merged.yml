@@ -1,0 +1,89 @@
+name: Publish plugin docs
+
+# マージ時に、PRの内容を wiki ページと README の一覧へ反映する。
+#   add:        wiki/<フォルダ名>.md を作成し、README.md / README.en.md の一覧へ行を追加
+#   それ以外:   wiki ページの「更新履歴」へ追記し、README の最終更新日を更新
+#
+# pull_request_target を使うのは、フォークからのPRでも書き込み権限のトークンを使うため。
+# PR側のコードはチェックアウトしない(ベースブランチ=マージ済みのコードだけを実行する)。
+# タイトル・本文は環境変数経由で渡し、シェルには展開しない。
+
+on:
+  pull_request_target:
+    types: [closed]
+
+permissions:
+  contents: write
+  pull-requests: read
+
+concurrency:
+  group: publish-plugin-docs
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      # ベースブランチ(マージ済みの最新)
+      - uses: actions/checkout@v4
+
+      # wiki(最初のページを手動で1つ作成しておかないと、このチェックアウトは失敗します)
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}.wiki
+          path: wiki
+
+      - name: List changed files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh api "repos/${REPO}/pulls/${PR_NUMBER}/files" --paginate \
+            --jq '.[] | [.status, .filename] | @tsv' > "${RUNNER_TEMP}/files.tsv"
+
+      - name: Generate wiki page and README rows
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_MERGED_AT: ${{ github.event.pull_request.merged_at }}
+          REPO: ${{ github.repository }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          python3 .github/scripts/plugin_tool.py publish \
+            --files "${RUNNER_TEMP}/files.tsv" --wiki-dir wiki
+
+      - name: Push wiki
+        working-directory: wiki
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "wiki に変更はありません。"
+          else
+            git commit -m "docs: update plugin pages (#${PR_NUMBER})"
+            git pull --rebase
+            git push
+          fi
+
+      - name: Push README
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md README.en.md
+          if git diff --cached --quiet; then
+            echo "README に変更はありません。"
+          else
+            git commit -m "docs: update plugin list (#${PR_NUMBER})"
+            git pull --rebase origin "${BASE_REF}"
+            git push origin "HEAD:${BASE_REF}"
+          fi
