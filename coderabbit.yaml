@@ -1,0 +1,69 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# CodeRabbit の設定: https://docs.coderabbit.ai/reference/configuration
+# ※ ファイル名は .coderabbit.yaml (リポジトリ直下)。.yml は公式ドキュメントに記載がありません。
+
+language: ja-JP
+tone_instructions: "丁寧で簡潔に。確証のない指摘は断定せず、確認事項として書く。"
+
+reviews:
+  profile: chill
+  high_level_summary: true
+  auto_review:
+    enabled: true
+    drafts: false
+
+  path_instructions:
+    # --- カスタムJS (各用途フォルダの js/ や skin/ 配下) ---------------------------
+    - path: "**/*.js"
+      instructions: |
+        このリポジトリのJSは、Dancing☆Onigiri (CW Edition) = danoniplus の「カスタムJS」です。
+        ブラウザ上で danoniplus 本体のスクリプトの後に読み込まれる単独のスクリプトで、danoniplus 本体が定義する
+        グローバル変数・関数(g_ で始まるものやファイルのトップレベルにいる関数など)を前提に動作します。
+        - danoniplus 本体のコード(複数のJSファイルに分割されています)はこのリポジトリに含まれません。参照している識別子について
+          「未定義」「存在しない関数」といった指摘はしないでください。danoniplus側に存在するか
+          確証が持てない場合は、断定せず「danoniplus側の定義を確認してください」程度に留めてください。
+        - import/export や require など、モジュール・Node.js前提の書き方になっていないか確認してください。
+        - グローバルに新しい名前を追加する場合は、danoniplus本体や他のカスタムJSと衝突しないか
+          (接頭辞・名前空間)を確認してください。
+        - PR本文「対応バージョン」に書かれたバージョンで使えない機能・APIを使っていないか、
+          分かる範囲で指摘してください。
+
+    # --- スキン用CSS ----------------------------------------------------------------
+    - path: "**/*.css"
+      instructions: |
+        danoniplus のスキン用CSSです。danoniplus 本体が生成するクラス名・ID を前提にセレクタを書いています。
+        本体側のクラス名が不明でも「未使用のセレクタ」とは指摘しないでください。
+        要素名だけのセレクタなど、意図しない範囲に影響しそうな広すぎる指定があれば指摘してください。
+
+    # --- README -------------------------------------------------------------------------
+    - path: "README*.md"
+      instructions: |
+        <!-- CUSTOM-JS-LIST:START --> と <!-- CUSTOM-JS-LIST:END --> の間の表は、マージ時に
+        GitHub Actions が自動更新します。この範囲の書式・内容には指摘しないでください。
+        それ以外の文章は、README.md と README.en.md で内容が揃っているか確認してください。
+
+    # --- CI / 自動化 --------------------------------------------------------------------
+    - path: ".github/workflows/**"
+      instructions: |
+        pull_request_target を使うワークフローでは、次の点を重点的に確認してください。
+        - PR側のコード(head)を checkout して実行していないこと
+        - PRのタイトル・本文などPR由来の値を、run: のシェルへ ${{ }} で直接展開せず、環境変数経由で渡していること
+        - permissions が必要最小限であること
+
+    - path: ".github/scripts/**"
+      instructions: |
+        PRのタイトル・本文・変更ファイル一覧から wiki と README を更新するスクリプトです。
+        標準ライブラリのみで動く前提を保ってください。
+        REQUIRED_HEADINGS は .github/PULL_REQUEST_TEMPLATE.md の見出しと完全一致している必要があります。
+
+    - path: ".github/PULL_REQUEST_TEMPLATE.md"
+      instructions: |
+        見出し(## ...)は .github/scripts/plugin_tool.py の REQUIRED_HEADINGS と完全一致している必要があります。
+        見出しを変更している場合は、両方が揃っているか確認してください。
+
+# danoniplus 本体を「関連リポジトリ」としてリンクできるようになったら、コメントを外して有効化します。
+# (同じアカウントの公開リポジトリで、CodeRabbit GitHub App がインストール済みであること)
+# knowledge_base:
+#   linked_repositories:
+#     - repository: cwtickle/danoniplus
+#       instructions: danoniplus 本体(複数のJSファイルに分割されています)。カスタムJSが参照するグローバル変数・関数の定義元。
