@@ -19,8 +19,19 @@ from pathlib import Path
 
 # ---------------------------------------------------------------- 設定
 
-REQUIRED_HEADINGS = ["概要", "対応バージョン", "導入方法", "設定項目", "注意点", "動作画面"]
-NON_EMPTY_HEADINGS = ["概要", "対応バージョン"]
+# PRテンプレート(.github/PULL_REQUEST_TEMPLATE.md)の見出し(## の後ろ)と完全一致させること。
+# 概要と対応バージョンは README の一覧に使うため、コード内でも名前で参照する。
+HEADING_OVERVIEW = "概要 / Overview"
+HEADING_VERSIONS = "対応バージョン / Supported Versions"
+REQUIRED_HEADINGS = [
+    HEADING_OVERVIEW,
+    HEADING_VERSIONS,
+    "導入方法 / Installation",
+    "設定項目 / Configuration",
+    "注意点 / Notes",
+    "スクリーンショット / Screenshots",
+]
+NON_EMPTY_HEADINGS = [HEADING_OVERVIEW, HEADING_VERSIONS]
 HISTORY_HEADING = "更新履歴"
 
 # 用途フォルダとして扱わないトップレベルディレクトリ(ドット始まりは常に除外)。
@@ -453,8 +464,8 @@ def cmd_publish(args: argparse.Namespace) -> int:
             print(f"wiki: {page.name} を作成しました。")
 
         # 英語READMEにも日本語の概要をそのまま載せる(翻訳は後でまとめて手動で行う)
-        row = build_row(folder, summary=first_paragraph(sections.get("概要", "")),
-                        versions=first_line(sections.get("対応バージョン", "")), types=types,
+        row = build_row(folder, summary=first_paragraph(sections.get(HEADING_OVERVIEW, "")),
+                        versions=first_line(sections.get(HEADING_VERSIONS, "")), types=types,
                         author=env["author"], date=date, repo=env["repo"])
         for lang, path in (("ja", args.readme), ("en", args.readme_en)):
             changed = update_readme(path, lang, folder, new_row=row, replace_existing=False)

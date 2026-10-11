@@ -11,16 +11,16 @@
   HTMLコメントは wiki / README には反映されません。
 -->
 
-## 概要
+## 概要 / Overview
 <!-- 1〜2文で。最初の段落が README の一覧にも使われます -->
 
-## 対応バージョン
+## 対応バージョン / Supported Versions
 <!-- 例: v40.0.0 以降 / 1行目が README の一覧に使われます -->
 
-## 導入方法
+## 導入方法 / Installation
 
-## 設定項目
+## 設定項目 / Configuration
 
-## 注意点
+## 注意点 / Notes
 
-## 動作画面
+## スクリーンショット / Screenshots

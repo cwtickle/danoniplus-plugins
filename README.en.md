@@ -28,7 +28,7 @@ Each custom JS lives in its own folder named after its purpose. See the "Wiki" l
 2. Use one of these PR title formats. The folder name is detected from the changed files, so you don't need to put it in the title.
    - New: `add: description`
    - Update: `update: description` / `fix: description` / `refactor: description`, etc. (anything other than `add:`)
-3. For an `add:` PR, fill in the PR template headings (概要 / 対応バージョン / 導入方法 / 設定項目 / 注意点 / 動作画面). When merged, the wiki page and this list are created automatically.
+3. For an `add:` PR, fill in the PR template headings (Overview / Supported Versions / Installation / Configuration / Notes / Screenshots, each written bilingually — keep the headings as they are). When merged, the wiki page and this list are created automatically.
 4. For an update PR, the PR title is appended to the page's update history in the wiki, and the "Last updated" column here is refreshed.
 
 Notes:
