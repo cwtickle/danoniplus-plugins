@@ -19,6 +19,7 @@ English: [README.en.md](./README.en.md)
 ```
 <用途名>/        … 用途ごとのフォルダ(wikiのページ名にも使われます)
   js/            … カスタムJS
+  css/           … カスタムCSS
   skin/          … スキン用のCSS・JS
 ```
 

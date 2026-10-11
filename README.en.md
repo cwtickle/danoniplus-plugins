@@ -19,6 +19,7 @@ Each custom JS lives in its own folder named after its purpose. See the "Wiki" l
 ```
 <name>/          … one folder per purpose (also used as the wiki page name)
   js/            … custom JS
+  css/           … custom CSS
   skin/          … CSS / JS for skins
 ```
 
