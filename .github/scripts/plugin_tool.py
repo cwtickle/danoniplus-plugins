@@ -35,6 +35,13 @@ REQUIRED_HEADINGS = [
 NON_EMPTY_HEADINGS = [HEADING_OVERVIEW, HEADING_VERSIONS]
 HISTORY_HEADING = "更新履歴"
 
+# 基盤フォルダ(ランチャーなど、用途ごとのカスタムJSではない共通部品): フォルダ名が `_` で始まるもの。
+# 検証・wiki・README・リリースの扱いは通常の用途フォルダと同じ(1PR 1フォルダ、add: は本文の見出しが必要)。
+# 違いは「基盤」だと分かる表示だけ: README・wikiの種別欄の先頭、リリースノートの行。
+# wikiページ名は、先頭の `_` を除いたフォルダ名(wiki の `_Sidebar` などの特殊ページと紛らわしくしないため)。
+INFRA_PREFIX = "_"
+INFRA_LABEL = "基盤"
+
 # 用途フォルダとして扱わないトップレベルディレクトリ(ドット始まりは常に除外)。
 # 将来、用途フォルダ以外のディレクトリをルートに置く場合はここへ追加する。
 IGNORED_DIRS: set[str] = set()
@@ -44,7 +51,7 @@ SKIP_TYPES = {"chore"}              # タイトルが `chore:` / `chore(scope):`
 # Dependabot の既定タイトルは「Bump ...」で `種別:` を持たないため、PR作者でも判定する。
 SKIP_AUTHORS = {"dependabot[bot]"}
 
-FOLDER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+FOLDER_RE = re.compile(r"^_?[A-Za-z0-9][A-Za-z0-9._-]*$")  # 先頭に `_` を1つだけ付けると基盤フォルダ
 TITLE_RE = re.compile(r"^\s*(?P<type>[A-Za-z]+)(?:\([^)]*\))?\s*:")
 
 MARK_START = "<!-- CUSTOM-JS-LIST:START -->"
@@ -96,8 +103,17 @@ def read_files(path: str) -> list[tuple[str, str]]:
     return files
 
 
+def is_infra(folder: str) -> bool:
+    return folder.startswith(INFRA_PREFIX)
+
+
+def wiki_name(folder: str) -> str:
+    """wikiのページ名(基盤フォルダは先頭の `_` を除く)。"""
+    return folder[len(INFRA_PREFIX):] if is_infra(folder) else folder
+
+
 def plugin_folders(files: list[tuple[str, str]]) -> dict[str, list[str]]:
-    """変更ファイルから用途フォルダ(トップレベルディレクトリ)を抽出し、ファイルのstatus一覧を返す。"""
+    """変更ファイルから用途フォルダ(トップレベルディレクトリ。基盤フォルダを含む)を抽出し、ファイルのstatus一覧を返す。"""
     folders: dict[str, list[str]] = {}
     for status, name in files:
         if "/" not in name:
@@ -123,13 +139,14 @@ def analyze_pr(title: str, files: list[tuple[str, str]]) -> dict:
     folders = plugin_folders(files)
     for name in folders:
         if not FOLDER_RE.match(name):
-            errors.append(f"フォルダ名 `{name}` は英数字と . _ - のみ使用できます。")
+            errors.append(f"フォルダ名 `{name}` は英数字と . _ - のみ使用できます(基盤フォルダは先頭に `_` を1つ付けます)。")
 
     if kind == "remove":
         errors.append("`remove:` は未対応です(削除経緯の記録方法が未決定)。")
 
     if len(folders) > 1:
-        errors.append("1つのPRで変更できる用途フォルダは1つだけです: " + ", ".join(sorted(folders)))
+        errors.append("1つのPRで変更できる用途フォルダは1つだけです(基盤フォルダも1つに数えます): "
+                      + ", ".join(sorted(folders)))
     elif len(folders) == 1:
         result["folder"] = next(iter(folders))
 
@@ -261,6 +278,8 @@ def folder_types(folder: str) -> str:
     if not p.is_dir():
         return "-"
     subs = sorted(d.name for d in p.iterdir() if d.is_dir() and not d.name.startswith("."))
+    if is_infra(folder):  # 基盤フォルダは、種別の先頭に「基盤」を付けて見分ける
+        subs.insert(0, INFRA_LABEL)
     return ", ".join(subs) if subs else "-"
 
 
@@ -319,6 +338,7 @@ def append_history(page_text: str, entry: str) -> str:
 
 def build_row(folder: str, *, summary: str, versions: str, types: str,
               author: str, date: str, repo: str) -> str:
+    wiki = wiki_name(folder)
     author_cell = f"[@{author}](https://github.com/{author})" if author else "-"
     cells = [
         f"[{folder}](./{folder})",
@@ -327,7 +347,7 @@ def build_row(folder: str, *, summary: str, versions: str, types: str,
         cell(versions) or "-",
         author_cell,
         date,
-        f"[Wiki](https://github.com/{repo}/wiki/{folder})",
+        f"[Wiki](https://github.com/{repo}/wiki/{wiki})",
     ]
     return "| " + " | ".join(cells) + " |"
 
@@ -475,7 +495,7 @@ def cmd_publish(args: argparse.Namespace) -> int:
 
     date = merged_date()
     types = folder_types(folder)
-    page = Path(args.wiki_dir) / f"{folder}.md"
+    page = Path(args.wiki_dir) / f"{wiki_name(folder)}.md"
     entry = history_entry(date, env["title"], env["url"])
 
     if info["is_add"]:
@@ -559,7 +579,8 @@ def load_prs(path: str) -> list[dict]:
 def release_entries(prs: list[dict], day: str) -> list[dict]:
     """その日(JST)にマージされたリリース対象のPRを、(PR, 用途フォルダ)ごとの行にして返す。
 
-    対象外: chore: / Dependabot のPR、用途フォルダを変更していないPR。
+    対象外: chore: / Dependabot のPR、用途フォルダ(基盤フォルダを含む)を変更していないPR。
+    infra は、基盤フォルダ(`_` 始まり)かどうか。
     """
     entries: list[dict] = []
     for pr in prs:
@@ -571,7 +592,7 @@ def release_entries(prs: list[dict], day: str) -> list[dict]:
         kind = "added" if m and m.group("type").lower() == "add" else "updated"
         for folder in sorted(plugin_folders([("modified", p) for p in pr["paths"]])):
             if FOLDER_RE.match(folder):
-                entries.append({**pr, "folder": folder, "kind": kind})
+                entries.append({**pr, "folder": folder, "kind": kind, "infra": is_infra(folder)})
     entries.sort(key=lambda e: (e["folder"].casefold(), e["number"]))
     return entries
 
@@ -585,8 +606,9 @@ def build_release_notes(entries: list[dict], *, tag: str, repo: str, previous_ta
     def line(e: dict) -> str:
         pr = f"[#{e['number']}]({e['url']})" if e["url"] else f"#{e['number']}"
         who = f", by [@{e['author']}](https://github.com/{e['author']})" if e["author"] else ""
-        return (f"- **{e['folder']}** — {e['title']} ({pr}{who}) · "
-                f"[Wiki](https://github.com/{repo}/wiki/{e['folder']}) · "
+        mark = " (基盤 / Common)" if e.get("infra") else ""
+        return (f"- **{e['folder']}**{mark} — {e['title']} ({pr}{who}) · "
+                f"[Wiki](https://github.com/{repo}/wiki/{wiki_name(e['folder'])}) · "
                 f"[Source](https://github.com/{repo}/tree/{tag}/{e['folder']})")
 
     out: list[str] = []
@@ -668,7 +690,6 @@ def main() -> int:
     r.add_argument("--to-day", required=True, help="対象期間の終了日(JST, YYYY-MM-DD)")
     r.add_argument("--out-dir", required=True, help="リリースノートと plan.txt の出力先")
     r.set_defaults(func=cmd_plan_releases)
-
 
     args = parser.parse_args()
     return args.func(args)
