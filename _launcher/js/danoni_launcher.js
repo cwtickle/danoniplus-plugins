@@ -154,9 +154,18 @@
         if (typeof _v !== `number` || !Number.isFinite(_v)) {
             return undefined;
         }
+        // 刻みの番号で丸める。最大が刻みに乗っていないときは、乗っている最後の刻みまで（つまみと同じ値になる）
         const inRange = Math.min(Math.max(_v, _s.min), _s.max);
-        const snapped = _s.min + Math.round((inRange - _s.min) / _s.step) * _s.step;
-        return Number(Math.min(snapped, _s.max).toFixed(6));
+        const index = Math.min(Math.round((inRange - _s.min) / _s.step), _s.lastStep);
+        const snapped = Number((_s.min + index * _s.step).toFixed(_s.digits));
+        return Math.min(Math.max(snapped, _s.min), _s.max);
+    };
+
+    /** 数の小数点以下の桁数（1e-7 のような書き方も数える。20 桁まで） */
+    const decimalsOf = _n => {
+        const [mant, exp] = String(_n).toLowerCase().split(`e`);
+        const d = (mant.split(`.`)[1] ?? ``).length - Number(exp ?? 0);
+        return Math.min(Math.max(d, 0), 20);
     };
 
     /** 出す条件（when: { key, is }。is は値 1 つか、値の並び）を確かめる。決まりに合わなければ null（いつも出す） */
@@ -182,19 +191,27 @@
             const options = (Array.isArray(_s.options) ? _s.options : []).slice(0, LIMITS.options)
                 .map(o => (o !== null && typeof o === `object`
                     ? { value: o.value, label: o.label ?? o.value } : { value: o, label: o }))
-                .filter(o => [`string`, `number`, `boolean`].includes(typeof o.value) && String(o.value).length <= LIMITS.text);
+                // 数は、保存して読み戻せるもの（Infinity・NaN は JSON で null になる）だけ
+                .filter(o => ([`string`, `boolean`].includes(typeof o.value) || (typeof o.value === `number` && Number.isFinite(o.value)))
+                    && String(o.value).length <= LIMITS.text);
+            if (Array.isArray(_s.options) && options.length < Math.min(_s.options.length, LIMITS.options)) {
+                console.warn(`[launcher] 使えない選択肢を外しました（文字列・true/false・有限の数だけ）: ${_s.key}`);
+            }
             if (options.length < 2) {
                 return null;
             }
             return { ...base, options, default: options.some(o => o.value === _s.default) ? _s.default : options[0].value };
         }
         if (_s.type === `number`) {
-            const [min, max] = [Number(_s.min), Number(_s.max)];
-            const step = Number(_s.step) > 0 ? Number(_s.step) : 1;
+            const [min, max, stepIn] = [Number(_s.min), Number(_s.max), Number(_s.step)];
+            const step = Number.isFinite(stepIn) && stepIn > 0 ? stepIn : 1;
             if (!Number.isFinite(min) || !Number.isFinite(max) || !(min < max)) {
                 return null;
             }
-            const s = { ...base, min, max, step, unit: _s.unit };
+            // 刻みの番号の最後（最大が刻みに乗っていなくても、範囲の中に収まる最後の刻み）と、丸める桁数
+            const lastStep = Math.floor((max - min) / step + 1e-9);
+            const digits = Math.max(decimalsOf(min), decimalsOf(step));
+            const s = { ...base, min, max, step, lastStep, digits, unit: _s.unit };
             s.default = cleanValue(s, Number(_s.default)) ?? min;
             return s;
         }
@@ -229,11 +246,29 @@
         /**
          * @param {object} _data   保存する全部（{ v: 1, values: { id: { key: 値 } } }）
          * @param {object} _change 今回変わった所（{ id, key, value } か { id, reset: true }）。
-         *                         差し替えた保存先が、ほかのタブの変更を消さずに書き足すために使う。ここでは使わない
+         *                         ほかのタブの変更を消さないよう、いま保存されている中身に、この 1 か所だけを書き足す
          */
         write(_data, _change) {
             try {
-                localStorage.setItem(STORE_KEY, JSON.stringify(_data));
+                let next = _data;
+                let latest = null;
+                try {
+                    latest = JSON.parse(localStorage.getItem(STORE_KEY));
+                } catch {
+                    latest = null;   // 壊れた中身が入っていたら、全部を書き直す
+                }
+                if (isObj(_change) && typeof _change.id === `string` && ID_RE.test(_change.id)
+                    && isObj(latest) && latest.v === 1 && isObj(latest.values)) {
+                    const values = latest.values;
+                    if (_change.reset === true) {
+                        delete values[_change.id];
+                    } else if (typeof _change.key === `string` && KEY_RE.test(_change.key)) {
+                        values[_change.id] = isObj(values[_change.id]) ? values[_change.id] : {};
+                        values[_change.id][_change.key] = _change.value;
+                    }
+                    next = { v: 1, values };
+                }
+                localStorage.setItem(STORE_KEY, JSON.stringify(next));
             } catch {
                 // 保存できなくても、開いている間は動く
             }
@@ -245,9 +280,18 @@
 
     const isObj = _v => _v !== null && typeof _v === `object` && !Array.isArray(_v);
 
-    const loadSaved = () => {
+    /** 保存先から読む（読めなければ null） */
+    const readStore = () => {
+        try {
+            return store.read();
+        } catch (e) {
+            console.error(`[launcher] 保存先から読めませんでした`, e);
+            return null;
+        }
+    };
+    const loadSaved = (_data = readStore()) => {
         saved = Object.create(null);
-        const data = store.read();
+        const data = _data;
         if (!isObj(data) || data.v !== 1 || !isObj(data.values)) {
             return;
         }
@@ -259,7 +303,10 @@
     };
     const writeSaved = _change => {
         try {
-            store.write({ v: 1, values: saved }, _change);
+            const done = store.write({ v: 1, values: saved }, _change);
+            if (done !== null && typeof done === `object` && typeof done.then === `function`) {
+                done.then(undefined, e => console.error(`[launcher] 保存でエラー`, e));
+            }
         } catch (e) {
             console.error(`[launcher] 保存でエラー`, e);
         }
@@ -280,14 +327,18 @@
     const isLocked = (_preset, _key) =>
         _preset.lock === true || (Array.isArray(_preset.lock) && _preset.lock.includes(_key));
 
-    /** 変わった設定を、カスタムjsに知らせる（登録の途中で呼ばないよう、いまの処理が済んでから） */
+    /**
+     * 変わった設定を、カスタムjsに知らせる（登録の途中で呼ばないよう、いまの処理が済んでから）
+     * 知らせる値は、変わったときの値（同じ処理の中で続けて変わっても、途中の値を飛ばさない）
+     */
     const notify = (_p, _keys) => {
         if (_keys.length === 0 || typeof _p.def.onChange !== `function`) {
             return;
         }
-        queueMicrotask(() => _keys.forEach(key => {
+        const changes = _keys.map(key => [key, _p.def.values[key]]);
+        queueMicrotask(() => changes.forEach(([key, value]) => {
             try {
-                _p.def.onChange(key, _p.def.values[key], _p.def.values);
+                _p.def.onChange(key, value, _p.def.values);
             } catch (e) {
                 console.error(`[launcher] ${_p.id} の onChange でエラー`, e);
             }
@@ -325,9 +376,14 @@
         if (value === undefined || _s.locked || _p.def.values[_s.key] === value) {
             return false;
         }
+        try {
+            _p.def.values[_s.key] = value;
+        } catch (e) {
+            console.error(`[launcher] ${_p.id} の values に入れられませんでした`, e);
+            return false;
+        }
         (saved[_p.id] ??= Object.create(null))[_s.key] = value;
         writeSaved({ id: _p.id, key: _s.key, value });
-        _p.def.values[_s.key] = value;
         notify(_p, [_s.key]);
         return true;
     };
@@ -335,30 +391,67 @@
     const resetValues = _p => {
         delete saved[_p.id];
         writeSaved({ id: _p.id, reset: true });
-        applyValues(_p);
+        try {
+            applyValues(_p);
+        } catch (e) {
+            console.error(`[launcher] ${_p.id} の値を既定に戻せませんでした`, e);
+        }
     };
 
     const adopt = _def => {
-        if (!isObj(_def) || typeof _def.id !== `string` || !ID_RE.test(_def.id) || plugins.has(_def.id)) {
-            console.warn(`[launcher] 登録できませんでした（id が無い・決まりに合わない・同じ id がある）`, _def?.id);
+        let p;
+        // 宣言の形が崩れていても（読むと例外になる値など）、その 1 本を捨てるだけにして、ランチャーは動き続ける
+        try {
+            if (!isObj(_def) || typeof _def.id !== `string` || !ID_RE.test(_def.id) || plugins.has(_def.id)) {
+                console.warn(`[launcher] 登録できませんでした（id が無い・決まりに合わない・同じ id がある）`, _def?.id);
+                return;
+            }
+            const keys = new Map();
+            const settings = (Array.isArray(_def.settings) ? _def.settings : []).slice(0, LIMITS.settings)
+                .map(normSetting).filter(s => s !== null && !keys.has(s.key) && keys.set(s.key, s));
+            // 出す条件は、同じカスタムjsのほかの設定だけを見られる（無い設定・自分を見る条件は外す）
+            settings.forEach(s => {
+                if (s.when !== null && (s.when.key === s.key || !keys.has(s.when.key))) {
+                    s.when = null;
+                }
+                // 色コードを見る条件は、値と同じ書き方（#rrggbb・小文字）にそろえてから比べる
+                const target = s.when !== null ? keys.get(s.when.key) : undefined;
+                if (target?.type === `color`) {
+                    const values = s.when.values.map(v => cleanColor(v, target.alpha)).filter(v => v !== undefined);
+                    s.when = values.length > 0 ? { key: s.when.key, values } : null;
+                }
+            });
+            const actions = (Array.isArray(_def.actions) ? _def.actions : []).slice(0, LIMITS.actions)
+                .filter(a => isObj(a) && typeof a.key === `string` && KEY_RE.test(a.key) && typeof a.run === `function`);
+            p = { id: _def.id, def: _def, settings, actions, quiet: _def.quiet === true };
+        } catch (e) {
+            console.warn(`[launcher] 宣言を読めなかったので、登録しませんでした`, e);
             return;
         }
-        const keys = new Set();
-        const settings = (Array.isArray(_def.settings) ? _def.settings : []).slice(0, LIMITS.settings)
-            .map(normSetting).filter(s => s !== null && !keys.has(s.key) && keys.add(s.key));
-        // 出す条件は、同じカスタムjsのほかの設定だけを見られる（無い設定・自分を見る条件は外す）
-        settings.forEach(s => {
-            if (s.when !== null && (s.when.key === s.key || !keys.has(s.when.key))) {
-                s.when = null;
-            }
-        });
-        const actions = (Array.isArray(_def.actions) ? _def.actions : []).slice(0, LIMITS.actions)
-            .filter(a => isObj(a) && typeof a.key === `string` && KEY_RE.test(a.key) && typeof a.run === `function`);
-        const p = { id: _def.id, def: _def, settings, actions };
         plugins.set(p.id, p);
-        applyValues(p);
-        render();
+        try {
+            applyValues(p);
+        } catch (e) {
+            // 値を入れられない宣言（values が書き換えられない、など）は、登録しない
+            plugins.delete(p.id);
+            console.warn(`[launcher] 値を入れられなかったので、登録しませんでした`, e);
+            return;
+        }
+        try {
+            render();
+        } catch (e) {
+            console.error(`[launcher] 画面を作れませんでした`, e);
+        }
     };
+
+    /** 全部のカスタムjsの値を決め直す（1 本で例外が出ても、ほかは続ける） */
+    const applyAll = () => plugins.forEach(p => {
+        try {
+            applyValues(p);
+        } catch (e) {
+            console.error(`[launcher] ${p.id} の値を決め直せませんでした`, e);
+        }
+    });
 
     /* ============================================================
      * 画面の部品
@@ -442,6 +535,7 @@ input { font: inherit; color: inherit; user-select: text; -webkit-user-select: t
 .x:hover, .x:focus-visible { background: var(--x-hover); }
 .body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 6px; overscroll-behavior: contain;
     scrollbar-width: thin; scrollbar-color: var(--scroll) transparent; }
+.body:focus { outline: none; }
 .body > * { flex: none; }
 .empty { padding: 18px 8px; color: var(--sub); text-align: center; }
 .chev { flex: none; width: 16px; color: var(--sub); font-size: 11px; text-align: center; transition: transform .12s; }
@@ -540,9 +634,15 @@ button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
     el.title = h(`b`);
     el.ver = h(`small`, { text: `launcher ${VERSION}` });
     el.close = h(`button`, { type: `button`, class: `x`, text: `×`, onclick: () => closePanel() });
-    el.body = h(`div`, { class: `body` });
+    el.body = h(`div`, { class: `body`, tabindex: `-1` });
     el.panel = h(`div`, { class: `panel`, role: `dialog` }, h(`div`, { class: `head` }, el.title, el.ver, el.close), el.body);
-    el.veil = h(`div`, { class: `veil`, hidden: true, onclick: ev => { if (ev.target === el.veil) closePanel(); } }, el.panel);
+    let veilPressed = false;
+    el.veil = h(`div`, {
+        class: `veil`, hidden: true,
+        onpointerdown: ev => { veilPressed = ev.target === el.veil; },
+        onpointerup: ev => { veilPressed &&= ev.target === el.veil; },
+        onclick: ev => { if (ev.target === el.veil && veilPressed) closePanel(); },
+    }, el.panel);
     el.root = h(`div`, { class: `root`, hidden: true }, el.fab, el.veil);
     shadow.append(h(`style`, { text: CSS }), el.root);
 
@@ -556,19 +656,101 @@ button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
     /** 広げているカスタムjs（id）と、値を決める欄を広げている設定（key）。どちらも 1 つまで */
     const ui = { plugin: null, setting: null };
 
-    /** 開いている間は、キーを本体のショートカットへ渡さない（Esc で閉じる） */
+    /** 開いている間に押されたキー（離したときも本体へ渡さない。開く前から押していたキーの離しは、本体へ渡す） */
+    const heldKeys = new Set();
+
+    /** 画面の中で、キーボードで選べる部品（Tab で回る順） */
+    const focusables = () => [el.close, ...el.body.querySelectorAll(`button, input`)]
+        .filter(e => !e.disabled && e.getClientRects().length > 0);
+
+    /**
+     * 開いている間は、キーを本体のショートカットへ渡さない（Esc で閉じる・Tab は画面の中だけを回る）
+     * 閉じている間も、ランチャーのボタンを選んで押した Enter・Space は、本体へ渡さない（本体が「始める」などに使うため）
+     */
     const onKey = ev => {
+        const key = ev.code || ev.key;
         if (!opened) {
+            if (ev.type === `keydown`) {
+                if ((ev.key === `Enter` || ev.key === ` `) && shadow.activeElement === el.fab && !el.root.hidden) {
+                    ev.stopImmediatePropagation();
+                    heldKeys.add(key);
+                } else if (ev.repeat && heldKeys.has(key)) {
+                    // 開いている間に押したキーを押したまま閉じたときの、押しっぱなしの繰り返しも渡さない
+                    ev.stopImmediatePropagation();
+                } else {
+                    // 本体へ渡した押しは、離しも必ず渡す（開いている間の押しが、離されないまま残っていた場合に備える）
+                    heldKeys.delete(key);
+                }
+            } else if (heldKeys.delete(key)) {
+                ev.stopImmediatePropagation();
+            }
+            return;
+        }
+        if (ev.type === `keyup`) {
+            // 開く前から押していたキーの離しは、本体へ渡す（渡さないと、本体はそのキーを押したままだと思う）
+            if (heldKeys.delete(key)) {
+                ev.stopImmediatePropagation();
+            }
             return;
         }
         ev.stopImmediatePropagation();
-        if (ev.type === `keydown` && ev.key === `Escape`) {
+        // 開いた直後は「×」に選択がある。開いたときの Enter・Space を押し続けた繰り返しで、すぐ閉じないようにする
+        if (ev.repeat && (ev.key === `Enter` || ev.key === ` `) && shadow.activeElement === el.close) {
+            ev.preventDefault();
+        }
+        // 押しっぱなしの繰り返しは数えない（開く前から押していたキーの繰り返しを覚えると、その離しを本体へ渡せなくなる）
+        if (!ev.repeat) {
+            heldKeys.add(key);
+        }
+        if (ev.key === `Escape`) {
             ev.preventDefault();
             closePanel();
+            return;
+        }
+        if (ev.key === `Tab`) {
+            const list = focusables();
+            const active = shadow.activeElement;
+            const at = list.indexOf(active);
+            // 画面の外に選択があるときと、端にいるときだけ、行き先を決める（画面の中のほかの所なら、ブラウザに任せる）
+            const outside = at === -1 && !(active instanceof Element && el.panel.contains(active));
+            if (list.length > 0 && (outside || (at !== -1 && (ev.shiftKey ? at === 0 : at === list.length - 1)))) {
+                ev.preventDefault();
+                (ev.shiftKey ? list[list.length - 1] : list[0]).focus();
+            }
         }
     };
     window.addEventListener(`keydown`, onKey, true);
     window.addEventListener(`keyup`, onKey, true);
+    // ほかのウィンドウへ移ると、離しが届かない。押したままの覚えを残さない
+    window.addEventListener(`blur`, () => heldKeys.clear());
+
+    /**
+     * 指やマウスで押している間は、画面を作り直さない。
+     * 押している部品が入れ替わると、その押しが無かったことになる（数字を打ったあと、ほかの部品を押して確定したときなど）。
+     * 離して、その押しの処理が済んでから作り直す
+     */
+    let pressing = false;
+    let renderWaiting = false;
+    const renderWhenFree = () => {
+        if (pressing) {
+            renderWaiting = true;
+        } else {
+            render();
+        }
+    };
+    const released = () => {
+        if (!pressing) {
+            return;
+        }
+        pressing = false;
+        if (renderWaiting) {
+            renderWaiting = false;
+            setTimeout(render, 0);   // 離したあとの click の処理が済んでから
+        }
+    };
+    host.addEventListener(`pointerdown`, () => { pressing = true; }, true);
+    window.addEventListener(`pointerup`, released, true);
+    window.addEventListener(`pointercancel`, released, true);
 
     /* ---- いまの値の見せ方 ---- */
 
@@ -601,6 +783,42 @@ button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
 
     /* ---- 値を決める欄（型ごと） ---- */
 
+    /**
+     * 画面の形（出している設定の並びと、「既定に戻す」を出すか）。数・色の欄で値が変わってこれが変わったら、画面を作り直す。
+     * 作り直すのは、操作が一区切りついたとき（ボタンを押した・つまみを離した・打ち終えた）だけ。
+     * 打っている途中やつまみを動かしている途中に作り直すと、欄やつまみが手から離れるため
+     */
+    const shapeOf = _p => _p.settings.filter(s => shownNow(_p, s)).map(s => s.key).join();
+
+    /** 保存した値があるか（「既定に戻す」を出すか） */
+    const hasSaved = _p => saved[_p.id] !== undefined && Object.keys(saved[_p.id]).length > 0;
+    /** 「既定に戻す」を、画面を作り直さずに出し入れする（数・色の欄で値を変えたとき） */
+    const syncFoot = _p => {
+        const foot = [...el.body.querySelectorAll(`[data-foot]`)].find(e => e.dataset.foot === _p.id);
+        if (foot !== undefined) {
+            foot.hidden = !hasSaved(_p);
+        }
+    };
+    const shaper = _p => {
+        let shape = shapeOf(_p);
+        let stale = false;
+        return {
+            /** 値が変わったあとに呼ぶ（形が変わったかを覚えるだけ） */
+            note() {
+                const now = shapeOf(_p);
+                stale ||= now !== shape;
+                shape = now;
+            },
+            /** 一区切りついたときに呼ぶ（形が変わっていたら作り直す。押している最中なら、離してから） */
+            settle() {
+                if (stale) {
+                    stale = false;
+                    setTimeout(renderWhenFree, 0);   // 選択の移動や、タッチのあとの click が済んでから
+                }
+            },
+        };
+    };
+
     /** 決まった選択肢: 並んだボタンから選ぶ */
     const selectEdit = (_p, _s) => h(`div`, { class: `opts`, role: `radiogroup`, 'aria-label': text(_s.label) },
         _s.options.map((o, j) => h(`button`, {
@@ -612,17 +830,25 @@ button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
     /** 決まった範囲の数: − ＋・つまみ・数字の欄 */
     const numberEdit = (_p, _s, _syncRow) => {
         const now = () => _p.def.values[_s.key];
-        const dec = h(`button`, { type: `button`, class: `step`, text: `−`, 'data-fk': `${_p.id}:${_s.key}:dec`, onclick: () => put(now() - _s.step) });
-        const inc = h(`button`, { type: `button`, class: `step`, text: `＋`, 'data-fk': `${_p.id}:${_s.key}:inc`, onclick: () => put(now() + _s.step) });
+        const shape = shaper(_p);
+        const dec = h(`button`, {
+            type: `button`, class: `step`, text: `−`, 'data-fk': `${_p.id}:${_s.key}:dec`,
+            onclick: () => { put(now() - _s.step); shape.settle(); },
+        });
+        const inc = h(`button`, {
+            type: `button`, class: `step`, text: `＋`, 'data-fk': `${_p.id}:${_s.key}:inc`,
+            onclick: () => { put(now() + _s.step); shape.settle(); },
+        });
         const range = h(`input`, {
             type: `range`, min: _s.min, max: _s.max, step: _s.step, 'aria-label': text(_s.label), 'data-fk': `${_p.id}:${_s.key}:range`,
             oninput: () => put(Number(range.value), range),
+            onchange: () => shape.settle(),   // つまみを離した
         });
         const field = h(`input`, {
             type: `number`, class: `field n`, min: _s.min, max: _s.max, step: _s.step, inputmode: `decimal`, 'aria-label': text(_s.label),
             'data-fk': `${_p.id}:${_s.key}:field`,
             // 打っている途中は触らない。打ち終えたら（Enter・ほかを押した）、範囲と刻みに合わせて入れる
-            onchange: () => put(field.value === `` ? NaN : Number(field.value)),
+            onchange: () => { put(field.value === `` ? NaN : Number(field.value)); shape.settle(); },
         });
         // 部品を作り直さずに、数字だけ合わせる（作り直すと、つまみや打っている欄が手から離れる）
         const sync = _from => {
@@ -631,13 +857,15 @@ button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
                 range.value = String(v);
             }
             field.value = String(v);
-            dec.disabled = v <= _s.min;
-            inc.disabled = v >= _s.max;
+            dec.disabled = (cleanValue(_s, v - _s.step) ?? v) === v;
+            inc.disabled = (cleanValue(_s, v + _s.step) ?? v) === v;
             _syncRow();
         };
         const put = (_v, _from) => {
             setValue(_p, _s, _v);
             sync(_from);
+            shape.note();
+            syncFoot(_p);
         };
         sync();
         return h(`div`, { class: `num` }, dec, range, inc, field, h(`span`, { class: `unit`, text: text(_s.unit) }));
@@ -652,39 +880,55 @@ button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
         const now = () => _p.def.values[_s.key];
         const rgb = () => now().slice(0, 7);
         const tail = () => (A ? now().slice(7, 9) : ``);
+        const shape = shaper(_p);
         const big = h(`span`, { class: `big` });
+        /**
+         * 打った文字を色コードにして入れる（# は無くてもよい）
+         *   打っている途中（_done が false）は、6 桁・8 桁の形になったときだけ入れる。
+         *   3 桁・4 桁の略した形は、打ち終えたとき（_done が true）だけ受ける（#123456 を打つ途中の #1234 を、不透明度つきの色として入れないため）
+         */
+        const takeTyped = _done => {
+            const typed = field.value.trim();
+            const code = typed.startsWith(`#`) ? typed : `#${typed}`;
+            if (!_done && ![7, 9].includes(code.length)) {
+                field.classList.toggle(`bad`, cleanColor(code, A) === undefined);
+                return;
+            }
+            let c = cleanColor(code, A);
+            // 不透明度の付く設定で、色だけ（#rgb・#rrggbb）を打ったときは、いまの不透明度を保つ
+            if (A && c !== undefined && cleanColor(code) !== undefined) {
+                c = `${c.slice(0, 7)}${tail()}`;
+            }
+            field.classList.toggle(`bad`, c === undefined);
+            if (c !== undefined) {
+                put(c, field);
+            }
+        };
         const field = h(`input`, {
             type: `text`, class: `field c`, maxlength: A ? 9 : 7, placeholder: A ? `#RRGGBBAA` : `#RRGGBB`,
             autocapitalize: `off`, autocomplete: `off`, autocorrect: `off`,
             spellcheck: `false`, 'aria-label': text(T.colorCode), 'data-fk': `${_p.id}:${_s.key}:code`,
-            oninput: () => {
-                // 打っている途中でも、色コードの形になったら入れる（# は無くてもよい）
-                const typed = field.value.trim();
-                const code = typed.startsWith(`#`) ? typed : `#${typed}`;
-                let c = cleanColor(code, A);
-                // 不透明度の付く設定で、色だけ（#rgb・#rrggbb）を打ったときは、いまの不透明度を保つ
-                if (A && c !== undefined && cleanColor(code) !== undefined) {
-                    c = `${c.slice(0, 7)}${tail()}`;
-                }
-                field.classList.toggle(`bad`, c === undefined);
-                if (c !== undefined) {
-                    put(c, field);
-                }
-            },
-            onchange: () => sync(),   // 打ち終えたら、いまの値の書き方にそろえる
+            oninput: () => takeTyped(false),
+            // 打ち終えたら、略した形も受けてから、いまの値の書き方にそろえる
+            onchange: () => { takeTyped(true); sync(); shape.settle(); },
         });
         const picker = h(`input`, {
             type: `color`, 'aria-label': text(T.colorPick), title: text(T.colorPick), 'data-fk': `${_p.id}:${_s.key}:pick`,
             oninput: () => put(`${picker.value}${tail()}`, picker),
+            onchange: () => shape.settle(),   // 色を選び終えた
         });
         const chips = _s.presets.map((c, j) => {
-            const chip = h(`button`, { type: `button`, class: `chip`, title: c, 'aria-label': c, 'data-fk': `${_p.id}:${_s.key}:c${j}`, onclick: () => put(`${c}${tail()}`) });
+            const chip = h(`button`, {
+                type: `button`, class: `chip`, title: c, 'aria-label': c, 'data-fk': `${_p.id}:${_s.key}:c${j}`,
+                onclick: () => { put(`${c}${tail()}`); shape.settle(); },
+            });
             chip.style.backgroundColor = c;
             return chip;
         });
         const aRange = A ? h(`input`, {
             type: `range`, min: 0, max: 100, step: 1, 'aria-label': text(T.alpha), 'data-fk': `${_p.id}:${_s.key}:alpha`,
             oninput: () => put(`${rgb()}${alphaHex(Number(aRange.value))}`, aRange),
+            onchange: () => shape.settle(),   // つまみを離した
         }) : null;
         const aOut = A ? h(`span`, { class: `unit` }) : null;
         const sync = _from => {
@@ -709,6 +953,8 @@ button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
         const put = (_v, _from) => {
             setValue(_p, _s, _v);
             sync(_from);
+            shape.note();
+            syncFoot(_p);
         };
         sync();
         return [
@@ -749,7 +995,34 @@ button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
 
     /* ---- カスタムjs 1 本 ---- */
 
+    /**
+     * そのカスタムjs全体のスイッチ（「enabled」というオン／オフ）。when の条件に合わないときは、スイッチとして扱わない
+     * （隠したスイッチがオフのままだと、設定の行も出せず、戻せなくなるため）
+     */
+    const mainSwitch = _p => {
+        const sw = _p.settings.find(s => s.key === `enabled` && s.type === `toggle`);
+        return sw !== undefined && shownNow(_p, sw) ? sw : undefined;
+    };
+
+    /** いまの画面で、そのボタンを押してよいか（読み込み中・プレイ中でない・出す画面に合う・使える・スイッチが入っている） */
+    const actionUsable = (_p, _a) => {
+        if (isBusyPage() || text(_p.def.unsupported) !== ``) {
+            return false;
+        }
+        const main = mainSwitch(_p);
+        if (main !== undefined && _p.def.values[main.key] !== true) {
+            return false;
+        }
+        const pg = page();
+        return !Array.isArray(_a.screens) || pg === null || _a.screens.includes(pg);
+    };
+
     const runAction = (_p, _a) => {
+        // 画面を作ってから本体の画面が変わっていたら、押さずに出し直す
+        if (!actionUsable(_p, _a)) {
+            render();
+            return;
+        }
         closePanel();
         try {
             _a.run();
@@ -763,13 +1036,13 @@ button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
         const ng = text(def.unsupported);
         const open = ui.plugin === _p.id;
         // 「enabled」というオン／オフは、そのカスタムjs全体のスイッチとして、畳んだままでも押せる所に出す
-        const main = ng === `` ? _p.settings.find(s => s.key === `enabled` && s.type === `toggle`) : undefined;
+        // （when の条件に合わないときは、スイッチを出さず、オフの扱いもしない）
+        const main = ng === `` ? mainSwitch(_p) : undefined;
         // when の条件に合わない設定は、出さない（値はそのまま働く）
         const rest = ng === `` ? _p.settings.filter(s => s !== main && shownNow(_p, s)) : [];
         const off = main !== undefined && def.values[main.key] !== true;
-        const pg = page();
         // いまの画面で使えるボタンは、畳んだままでも押せる
-        const acts = ng === `` && !off ? _p.actions.filter(a => !Array.isArray(a.screens) || pg === null || a.screens.includes(pg)) : [];
+        const acts = ng === `` && !off ? _p.actions.filter(a => actionUsable(_p, a)) : [];
 
         const head = h(`div`, { class: `hdrow` },
             h(`button`, {
@@ -809,12 +1082,15 @@ button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
             } else {
                 rest.forEach(s => body.push(settingRow(_p, s)));
             }
-            if (saved[_p.id] !== undefined && Object.keys(saved[_p.id]).length > 0) {
-                body.push(h(`div`, { class: `foot` }, h(`button`, {
-                    type: `button`, class: `reset`, text: text(T.reset), 'data-fk': `${_p.id}::reset`,
-                    onclick: () => { resetValues(_p); render(); },
-                })));
-            }
+            body.push(h(`div`, { class: `foot`, 'data-foot': _p.id, hidden: !hasSaved(_p) }, h(`button`, {
+                type: `button`, class: `reset`, text: text(T.reset), 'data-fk': `${_p.id}:#reset`,
+                onclick: () => {
+                    resetValues(_p);
+                    render();
+                    // 押したボタンは隠れるので、選択はそのカスタムjsの見出しへ移す（キーボードで続けて操作できるように）
+                    [...el.body.querySelectorAll(`[data-fk]`)].find(e => e.dataset.fk === _p.id)?.focus({ preventScroll: true });
+                },
+            })));
             kids.push(h(`div`, { class: `content` }, body));
         }
         return h(`div`, { class: `item${open ? ` open` : ``}${ng !== `` || off ? ` dim` : ``}`, 'data-item': _p.id }, kids);
@@ -827,7 +1103,14 @@ button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
         el.fab.className = `fab ${selfDef.values.corner}`;
         el.root.className = `root ${THEMES.includes(selfDef.values.theme) ? selfDef.values.theme : THEMES[0]}`;
         // 出すカスタムjsが 1 本も無いページでは、ボタンを出さない（登録されたら出る。ランチャー自身と、quiet: true のものは数えない）
-        el.fab.hidden = ![...plugins.values()].some(p => p.def !== selfDef && p.def.quiet !== true);
+        const wasHidden = el.fab.hidden;
+        el.fab.hidden = ![...plugins.values()].some(p => p.def !== selfDef && !p.quiet);
+        if (wasHidden && !el.fab.hidden) {
+            // あとから出たときも、本体のボタンとの重なりを見る
+            dodge();
+            clearTimeout(dodgeTimer);
+            dodgeTimer = setTimeout(dodge, 600);
+        }
         if (!opened) {
             return;
         }
@@ -840,9 +1123,18 @@ button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
         el.close.setAttribute(`aria-label`, text(T.close));
         // 登録の順に並べ、ランチャー自身は最後
         const order = [...plugins.values()].filter(p => p.def !== selfDef);
+        // 1 本の行を作る途中で例外が出ても（宣言の中身を読むと例外になる、など）、その 1 本を出さないだけにする
+        const safeItem = _p => {
+            try {
+                return item(_p);
+            } catch (e) {
+                console.error(`[launcher] ${_p.id} の行を作れませんでした`, e);
+                return null;
+            }
+        };
         el.body.replaceChildren(
-            ...(order.length === 0 ? [h(`div`, { class: `empty`, text: text(T.empty) })] : order.map(item)),
-            item(plugins.get(selfDef.id)));
+            ...(order.length === 0 ? [h(`div`, { class: `empty`, text: text(T.empty) })] : order.map(safeItem).filter(e => e !== null)),
+            ...[plugins.get(selfDef.id)].filter(p => p?.def === selfDef).map(safeItem).filter(e => e !== null));
         el.body.scrollTop = scroll;
         if (focus !== undefined) {
             [...el.body.querySelectorAll(`[data-fk]`)].find(e => e.dataset.fk === focus)?.focus({ preventScroll: true });
@@ -862,13 +1154,13 @@ button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
     }
 
     function openPanel() {
-        if (opened || isBusyPage()) {
+        if (opened || isBusyPage() || !host.isConnected) {
             return;
         }
         opened = true;
         el.veil.hidden = false;
         // 作品側の指定が後から置かれていても拾えるよう、開くたびに値を決め直す
-        plugins.forEach(applyValues);
+        applyAll();
         fit();
         render();
         el.close.focus();
@@ -880,7 +1172,8 @@ button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
         }
         opened = false;
         el.veil.hidden = true;
-        el.fab.focus();
+        // 閉じたら、キーは本体へ戻す（ランチャーのボタンに選択を残すと、次の Enter でまた開いてしまい、本体の「始める」に届かない）
+        shadow.activeElement?.blur();
     }
 
     /* ============================================================
@@ -956,7 +1249,7 @@ button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
         if (pg !== lastPage) {
             lastPage = pg;
             fit();
-            plugins.forEach(applyValues);
+            applyAll();
             render();   // 画面ごとに出すボタンが変わる
             // 本体のボタンは画面の組み立ての途中で足されることがあるので、少し待ってもう一度見る
             dodge();
@@ -1018,7 +1311,7 @@ button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
             return opened;
         },
         /** 登録されている id の一覧 */
-        ids: () => [...plugins.keys()],
+        ids: () => [...[...plugins.keys()].filter(id => id !== selfDef.id), ...(plugins.has(selfDef.id) ? [selfDef.id] : [])],
         /** カスタムjsを広げる（_key を渡すと、その設定の値を決める欄も広げる）。_id を省くと全部畳む */
         show(_id = null, _key = null) {
             ui.plugin = _id !== null && plugins.has(_id) ? _id : null;
@@ -1045,23 +1338,40 @@ button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
          *   { read() → 全部, write(全部, 今回変わった所) }。同じ保存先をもう一度渡すと、読み直して値を決め直す
          */
         setStore(_store) {
-            if (isObj(_store) && typeof _store.read === `function` && typeof _store.write === `function`) {
-                store = _store;
-                loadSaved();
-                plugins.forEach(applyValues);
-                render();
+            if (!isObj(_store) || typeof _store.read !== `function` || typeof _store.write !== `function`) {
+                return false;
             }
+            // 先に新しい保存先から読む。読めなければ、いまの保存先と値をそのまま使い続ける
+            let data;
+            try {
+                data = _store.read();
+            } catch (e) {
+                console.error(`[launcher] 新しい保存先から読めなかったので、差し替えませんでした`, e);
+                return false;
+            }
+            // 読んだ結果があとから届く形（Promise）の保存先は、受け付けない（空として読むと、全部が既定に戻る）
+            if (data !== null && typeof data === `object` && typeof data.then === `function`) {
+                console.error(`[launcher] read() があとから結果を返す保存先は、使えません`);
+                return false;
+            }
+            store = _store;
+            loadSaved(data ?? null);
+            applyAll();
+            render();
+            return true;
         },
     };
 
-    // すでに登録されているものを拾い、これから登録されるものも拾う
+    // 自分を最初に受け付ける（同じ id のものが先に登録されていても、ランチャー自身の設定を出せるように）。
+    // そのあと、すでに登録されているものを拾い、これから登録されるものも拾う
+    adopt(selfDef);
     [...list].forEach(adopt);
     list.push = function (..._defs) {
         const length = Array.prototype.push.apply(this, _defs);
         _defs.forEach(adopt);
         return length;
     };
-    list.push(selfDef);
+    Array.prototype.push.call(list, selfDef);   // 配列にも置く（受け付けは済んでいる）
 
     tick();
     setInterval(tick, 250);
