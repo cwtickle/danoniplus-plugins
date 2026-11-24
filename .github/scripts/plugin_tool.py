@@ -659,6 +659,8 @@ def cmd_plan_releases(args: argparse.Namespace) -> int:
             continue
         notes = build_release_notes(entries, tag=day, repo=repo, previous_tag=previous_date_tag(sorted(known), day))
         (out_dir / f"{day}.md").write_text(notes, encoding="utf-8")
+        folders = sorted({e["folder"] for e in entries}, key=str.casefold)
+        (out_dir / f"{day}.folders.txt").write_text("".join(f"{f}\n" for f in folders), encoding="utf-8")
         known.add(day)
         planned.append(day)
         print(f"{day}: {len(entries)} 件 → リリースを作成します。")
