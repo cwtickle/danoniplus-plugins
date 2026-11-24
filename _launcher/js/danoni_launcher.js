@@ -722,11 +722,12 @@ button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
         + `<circle cx="13" cy="10" r="2"/><circle cx="6" cy="14.5" r="2"/></svg>`;
 
     const el = {};
-    el.fab = h(`button`, { type: `button`, class: `fab tr`, onclick: () => openPanel() });
+    // キーで押した（Enter・Space。click の detail が 0）ときは、閉じたあとに選択をこのボタンへ戻す
+    el.fab = h(`button`, { type: `button`, class: `fab tr`, onclick: ev => openPanel(ev.detail === 0) });
     el.fab.innerHTML = ICON;   // 決まった文字だけ（外から来た文字は入らない）
     el.title = h(`b`, { id: `title` });
     el.ver = h(`small`, { text: `launcher ${VERSION}` });
-    el.close = h(`button`, { type: `button`, class: `x`, text: `×`, onclick: () => closePanel() });
+    el.close = h(`button`, { type: `button`, class: `x`, text: `×`, onclick: () => closePanel(true) });
     el.body = h(`div`, { class: `body`, tabindex: `-1` });
     // 開いている間、後ろ（本体の画面）は幕で押せず、キーも渡さない。読み上げにも、そう伝える（本体の部品には手を入れない）
     el.panel = h(`div`, { class: `panel`, role: `dialog`, 'aria-modal': `true`, 'aria-labelledby': `title` }, h(`div`, { class: `head` }, el.title, el.ver, el.close), el.body);
@@ -735,7 +736,7 @@ button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
         class: `veil`, hidden: true,
         onpointerdown: ev => { veilPressed = ev.target === el.veil; },
         onpointerup: ev => { veilPressed &&= ev.target === el.veil; },
-        onclick: ev => { if (ev.target === el.veil && veilPressed) closePanel(); },
+        onclick: ev => { if (ev.target === el.veil && veilPressed) closePanel(true); },
     }, el.panel);
     el.root = h(`div`, { class: `root`, hidden: true }, el.fab, el.veil);
     shadow.append(h(`style`, { text: CSS }), el.root);
@@ -777,6 +778,10 @@ button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
                 if ((ev.key === `Enter` || ev.key === ` `) && shadow.activeElement === el.fab && !el.root.hidden) {
                     ev.stopImmediatePropagation();
                     heldKeys.add(key);
+                    // 押しっぱなしの繰り返しでは、ボタンを押さない（Enter で閉じて選択がここへ戻ったあと、そのまま開き直さないため）
+                    if (ev.repeat) {
+                        ev.preventDefault();
+                    }
                 } else if (ev.repeat && heldKeys.has(key)) {
                     // 開いている間に押したキーを押したまま閉じたときの、押しっぱなしの繰り返しも渡さない
                     ev.stopImmediatePropagation();
@@ -807,7 +812,7 @@ button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
         }
         if (ev.key === `Escape`) {
             ev.preventDefault();
-            closePanel();
+            closePanel(true);
             return;
         }
         if (Object.hasOwn(ARROWS, ev.key) && shadow.activeElement?.getAttribute(`role`) === `radio`) {
@@ -1119,11 +1124,13 @@ button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
     /* ---- カスタムjs 1 本 ---- */
 
     /**
-     * そのカスタムjs全体のスイッチ（「enabled」というオン／オフ）。when の条件に合わないときは、スイッチとして扱わない
-     * （隠したスイッチがオフのままだと、設定の行も出せず、戻せなくなるため）
+     * そのカスタムjs全体のスイッチ（「enabled」というオン／オフ）。
+     * when の条件に合わないときは、スイッチを出さない。オフかどうかは、出していなくても、入っている値で決める
+     * （オフの間は、ボタンを出さない。スイッチを出していない間は、設定の行を出したままにして、条件を戻せるようにする）
      */
+    const enabledSwitch = _p => _p.settings.find(s => s.key === `enabled` && s.type === `toggle`);
     const mainSwitch = _p => {
-        const sw = _p.settings.find(s => s.key === `enabled` && s.type === `toggle`);
+        const sw = enabledSwitch(_p);
         return sw !== undefined && shownNow(_p, sw) ? sw : undefined;
     };
 
@@ -1132,8 +1139,8 @@ button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
         if (isBusyPage() || text(_p.def.unsupported) !== ``) {
             return false;
         }
-        const main = mainSwitch(_p);
-        if (main !== undefined && _p.def.values[main.key] !== true) {
+        const enabled = enabledSwitch(_p);
+        if (enabled !== undefined && _p.def.values[enabled.key] !== true) {
             return false;
         }
         // 出す画面の決まったボタンは、その画面だと分かるときだけ（本体の画面が分からない版では、出さない）
@@ -1165,11 +1172,12 @@ button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
         const ng = text(def.unsupported);
         const open = ui.plugin === _p.id;
         // 「enabled」というオン／オフは、そのカスタムjs全体のスイッチとして、畳んだままでも押せる所に出す
-        // （when の条件に合わないときは、スイッチを出さず、オフの扱いもしない）
+        // （when の条件に合わないときは、スイッチを出さない。オフかどうかは、入っている値で決める）
         const main = ng === `` ? mainSwitch(_p) : undefined;
+        const enabled = ng === `` ? enabledSwitch(_p) : undefined;
         // when の条件に合わない設定は、出さない（値はそのまま働く）
         const rest = ng === `` ? _p.settings.filter(s => s !== main && shownNow(_p, s)) : [];
-        const off = main !== undefined && def.values[main.key] !== true;
+        const off = enabled !== undefined && def.values[enabled.key] !== true;
         // いまの画面で使えるボタンは、畳んだままでも押せる
         const acts = ng === `` && !off ? _p.actions.filter(a => actionUsable(_p, a)) : [];
 
@@ -1204,7 +1212,7 @@ button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
             }
             if (ng !== ``) {
                 body.push(h(`p`, { class: `desc`, text: `${text(T.unsupported)}: ${ng}` }));
-            } else if (off) {
+            } else if (off && main !== undefined) {
                 body.push(h(`p`, { class: `desc`, text: text(T.turnOn) }));
             } else if (rest.length === 0) {
                 body.push(h(`p`, { class: `desc`, text: text(T.noSettings) }));
@@ -1293,11 +1301,18 @@ button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
         }
     }
 
-    function openPanel() {
+    /** 閉じたあとに、選択を戻す先（ランチャーのボタンをキーで押して開いたときだけ。それ以外は null） */
+    let backTo = null;
+
+    /** @param {boolean} [_byKey] ランチャーのボタンを、キーで押して開いた */
+    function openPanel(_byKey = false) {
         if (opened || isBusyPage() || !host.isConnected) {
             return;
         }
         opened = true;
+        backTo = _byKey === true ? el.fab : null;
+        // 開いている間は、後ろのランチャーのボタンを選べなくする（本体の部品には手を入れない。本体へのキーとポインターは、下の onKey と幕が止める）
+        el.fab.inert = true;
         lastShowing = null;   // 開いたときは、広げている所を見える位置へ送る
         el.veil.hidden = false;
         // 作品側の指定が後から置かれていても、ほかのタブで設定を変えていても拾えるよう、開くたびに値を決め直す
@@ -1308,14 +1323,24 @@ button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
         el.close.focus();
     }
 
-    function closePanel() {
+    /** @param {boolean} [_byUser] 人が閉じた（×・Esc・幕の外側）。本体の画面が変わって閉じるとき・ボタンを押して閉じるときは false */
+    function closePanel(_byUser = false) {
         if (!opened) {
             return;
         }
         opened = false;
         el.veil.hidden = true;
-        // 閉じたら、キーは本体へ戻す（ランチャーのボタンに選択を残すと、次の Enter でまた開いてしまい、本体の「始める」に届かない）
-        shadow.activeElement?.blur();
+        el.fab.inert = false;
+        const to = _byUser === true ? backTo : null;
+        backTo = null;
+        if (to !== null && to.isConnected && !el.root.hidden && !to.hidden) {
+            // キーで開いた人には、開いたボタンへ選択を戻す（キーボードで続けて操作できるように）
+            to.focus({ preventScroll: true });
+        } else {
+            // マウス・タッチで開いたときは、キーを本体へ戻す
+            // （ランチャーのボタンに選択を残すと、次の Enter でまた開いてしまい、本体の「始める」に届かない）
+            shadow.activeElement?.blur();
+        }
     }
 
     /* ============================================================
@@ -1451,8 +1476,8 @@ button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
     /** ほかのスクリプト（拡張機能・試験）から使う口 */
     list.launcher = {
         version: VERSION,
-        open: openPanel,
-        close: closePanel,
+        open: () => openPanel(),
+        close: () => closePanel(),
         get isOpen() {
             return opened;
         },
