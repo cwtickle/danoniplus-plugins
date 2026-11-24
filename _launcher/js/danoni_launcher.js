@@ -218,20 +218,19 @@
             if (digits > DIGITS_MAX) {
                 return null;
             }
+            // 範囲の端の大きさが、刻みの 2^50 倍を超える宣言は、受け付けない。数の精度が足りず、隣り合う刻みが同じ数に丸まる
+            // （1e20 に 1 を足す、2^53 のあたりの 1 刻み、など。範囲の途中の刻みも含めて、どの刻みも区別できる大きさに限る）。
+            if (!(Math.max(Math.abs(min), Math.abs(max)) / step <= 2 ** 50)) {
+                return null;
+            }
             let lastStep = Math.floor((max - min) / step + 1e-9);
-            // 範囲が大きすぎて刻みの数を数えられない（計算があふれる）宣言は、受け付けない
+            // 範囲の幅そのものがあふれる（min -1e308・max 1e308 など）宣言は、刻みの数を数えられないので、受け付けない
             if (!Number.isFinite(lastStep)) {
                 return null;
             }
             // 上の 1e-9 は、割り算の誤差（0.3 / 0.1 が 2.99… になる）のため。その分で最大を超えた刻みは、数えない
             if (lastStep > 0 && Number((min + lastStep * step).toFixed(digits)) > max) {
                 lastStep--;
-            }
-            // 刻みが細かすぎて、1 つ先の値を最小と区別できない宣言（数の精度を超える。1e20 に 1 を足す、など）は、受け付けない
-            // 最後の刻みと、その 1 つ手前でも同じ（範囲が広すぎて、上のほうで刻みが効かなくなる宣言）
-            const at = _n => Number((min + _n * step).toFixed(digits));
-            if (lastStep > 0 && !(at(1) > min && at(lastStep) > at(lastStep - 1))) {
-                return null;
             }
             const s = { ...base, min, max, step, lastStep, digits, unit: _s.unit };
             s.default = cleanValue(s, Number(_s.default)) ?? min;
@@ -257,9 +256,12 @@
      * 保存（人が変えた値だけ。既定のままの設定は、カスタムjsの既定が変わればそれに従う）
      * ============================================================ */
 
-    /** 既定の保存先で、保存に失敗した変更（容量があふれたときなど）。次に保存できたとき、いっしょに書き足す */
+    /**
+     * 既定の保存先で、保存に失敗した変更（容量があふれたときなど）。次に保存できたとき、いっしょに書き足す。
+     * 同じ設定の変更は新しいほうで置き換え、「既定に戻す」はそのカスタムjsの前の変更を置き換えるので、
+     * 数は「登録されているカスタムjsの設定の数」を超えない（保存できるまで、どれも捨てない）
+     */
     let unsaved = [];
-    const UNSAVED_MAX = 200;
     const isChange = _c => isObj(_c) && typeof _c.id === `string` && ID_RE.test(_c.id)
         && (_c.reset === true || (typeof _c.key === `string` && KEY_RE.test(_c.key)));
 
@@ -302,7 +304,7 @@
             unsaved = [];
         } catch {
             // 保存できなくても、開いている間は動く。この変更は、次に保存できたときに書き足す
-            unsaved = changes.slice(-UNSAVED_MAX);
+            unsaved = changes;
         }
     };
 
@@ -943,7 +945,8 @@ button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
             _s.options.map((o, j) => h(`button`, {
                 type: `button`, class: `opt`, role: `radio`, text: text(o.label), 'data-fk': `${_p.id}:${_s.key}:o${j}`,
                 'aria-checked': String(o.value === _p.def.values[_s.key]), tabindex: j === at ? `0` : `-1`,
-                onclick: () => { setValue(_p, _s, o.value); render(); },
+                // 押している最中（選択肢を押したまま矢印キーで動かした、など）は、離してから作り直す
+                onclick: () => { setValue(_p, _s, o.value); renderWhenFree(); },
             })));
     };
 
