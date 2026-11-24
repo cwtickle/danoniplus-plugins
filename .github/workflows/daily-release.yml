@@ -86,12 +86,19 @@ jobs:
             ASSETS=()
             ZIPDIR="${RUNNER_TEMP}/assets/${TAG}"
             mkdir -p "${ZIPDIR}"
+
+            # 当日の変更フォルダ + タグ時点に存在する基盤フォルダ(`_` 始まり)を、重複なしで対象にする
+            {
+              cat "${RUNNER_TEMP}/release/${TAG}.folders.txt"
+              git ls-tree -d --name-only "${SHA}" | grep '^_' || true
+            } | sort -u > "${RUNNER_TEMP}/release/${TAG}.zip-targets.txt"
+
             while read -r FOLDER; do
               [ -n "${FOLDER}" ] || continue
               git archive --format=zip --prefix="${FOLDER}/" \
                 -o "${ZIPDIR}/${FOLDER}-${TAG}.zip" "${SHA}" "${FOLDER}"
               ASSETS+=("${ZIPDIR}/${FOLDER}-${TAG}.zip")
-            done < "${RUNNER_TEMP}/release/${TAG}.folders.txt"
+            done < "${RUNNER_TEMP}/release/${TAG}.zip-targets.txt"
 
             gh release create "${TAG}" --repo "${REPO}" --target "${SHA}" --title "${TAG}" \
               --notes-file "${RUNNER_TEMP}/release/${TAG}.md" "${ASSETS[@]}"
