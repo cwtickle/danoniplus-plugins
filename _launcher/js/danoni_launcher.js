@@ -161,12 +161,13 @@
         return Math.min(Math.max(snapped, _s.min), _s.max);
     };
 
-    /** 数の小数点以下の桁数（1e-7 のような書き方も数える。20 桁まで） */
+    /** 数の小数点以下の桁数（1e-7 のような書き方も数える） */
     const decimalsOf = _n => {
         const [mant, exp] = String(_n).toLowerCase().split(`e`);
-        const d = (mant.split(`.`)[1] ?? ``).length - Number(exp ?? 0);
-        return Math.min(Math.max(d, 0), 20);
+        return Math.max((mant.split(`.`)[1] ?? ``).length - Number(exp ?? 0), 0);
     };
+    /** 丸められる小数の桁数（toFixed の上限） */
+    const DIGITS_MAX = 20;
 
     /** 出す条件（when: { key, is }。is は値 1 つか、値の並び）を確かめる。決まりに合わなければ null（いつも出す） */
     const normWhen = _w => {
@@ -189,13 +190,16 @@
         }
         if (_s.type === `select`) {
             const options = (Array.isArray(_s.options) ? _s.options : []).slice(0, LIMITS.options)
-                .map(o => (o !== null && typeof o === `object`
-                    ? { value: o.value, label: o.label ?? o.value } : { value: o, label: o }))
+                .map(o => (o !== null && typeof o === `object` ? { value: o.value, label: o.label } : { value: o }))
+                // ラベルの無い選択肢は、値をそのまま出す（true / false は、文字にならないので ON / OFF）
+                .map(o => ({ value: o.value, label: o.label ?? (typeof o.value === `boolean` ? (o.value ? T.on : T.off) : o.value) }))
                 // 数は、保存して読み戻せるもの（Infinity・NaN は JSON で null になる）だけ
                 .filter(o => ([`string`, `boolean`].includes(typeof o.value) || (typeof o.value === `number` && Number.isFinite(o.value)))
-                    && String(o.value).length <= LIMITS.text);
+                    && String(o.value).length <= LIMITS.text)
+                // 同じ値の選択肢は、最初の 1 つだけ（値で選ぶので、2 つあると見分けられない）
+                .filter((o, j, all) => all.findIndex(v => v.value === o.value) === j);
             if (Array.isArray(_s.options) && options.length < Math.min(_s.options.length, LIMITS.options)) {
-                console.warn(`[launcher] 使えない選択肢を外しました（文字列・true/false・有限の数だけ）: ${_s.key}`);
+                console.warn(`[launcher] 使えない選択肢を外しました（文字列・true/false・有限の数だけ。同じ値は最初の 1 つ）: ${_s.key}`);
             }
             if (options.length < 2) {
                 return null;
@@ -209,8 +213,26 @@
                 return null;
             }
             // 刻みの番号の最後（最大が刻みに乗っていなくても、範囲の中に収まる最後の刻み）と、丸める桁数
-            const lastStep = Math.floor((max - min) / step + 1e-9);
             const digits = Math.max(decimalsOf(min), decimalsOf(step));
+            // 小数 20 桁より細かい最小・刻みは、受け付けない（丸めで刻みからずれて、つまみと数字の欄が食い違う）
+            if (digits > DIGITS_MAX) {
+                return null;
+            }
+            let lastStep = Math.floor((max - min) / step + 1e-9);
+            // 範囲が大きすぎて刻みの数を数えられない（計算があふれる）宣言は、受け付けない
+            if (!Number.isFinite(lastStep)) {
+                return null;
+            }
+            // 上の 1e-9 は、割り算の誤差（0.3 / 0.1 が 2.99… になる）のため。その分で最大を超えた刻みは、数えない
+            if (lastStep > 0 && Number((min + lastStep * step).toFixed(digits)) > max) {
+                lastStep--;
+            }
+            // 刻みが細かすぎて、1 つ先の値を最小と区別できない宣言（数の精度を超える。1e20 に 1 を足す、など）は、受け付けない
+            // 最後の刻みと、その 1 つ手前でも同じ（範囲が広すぎて、上のほうで刻みが効かなくなる宣言）
+            const at = _n => Number((min + _n * step).toFixed(digits));
+            if (lastStep > 0 && !(at(1) > min && at(lastStep) > at(lastStep - 1))) {
+                return null;
+            }
             const s = { ...base, min, max, step, lastStep, digits, unit: _s.unit };
             s.default = cleanValue(s, Number(_s.default)) ?? min;
             return s;
@@ -235,7 +257,66 @@
      * 保存（人が変えた値だけ。既定のままの設定は、カスタムjsの既定が変わればそれに従う）
      * ============================================================ */
 
-    let store = {
+    /** 既定の保存先で、保存に失敗した変更（容量があふれたときなど）。次に保存できたとき、いっしょに書き足す */
+    let unsaved = [];
+    const UNSAVED_MAX = 200;
+    const isChange = _c => isObj(_c) && typeof _c.id === `string` && ID_RE.test(_c.id)
+        && (_c.reset === true || (typeof _c.key === `string` && KEY_RE.test(_c.key)));
+
+    /**
+     * 既定の保存先（localStorage）に、1 回ぶんを書く
+     * @param {object} _data   保存する全部（{ v: 1, values: { id: { key: 値 } } }）
+     * @param {object} _change 今回変わった所（{ id, key, value } か { id, reset: true }）。
+     *                         ほかのタブの変更を消さないよう、いま保存されている中身に、この 1 か所だけを書き足す
+     */
+    const commitLocal = (_data, _change) => {
+        // 前に保存できなかった変更に、今回の変更を足す。同じ設定の前の変更は、新しいほうで置き換える
+        // （「既定に戻す」は、そのカスタムjsの前の変更を全部置き換える）
+        let changes = unsaved;
+        if (isChange(_change)) {
+            changes = [...changes.filter(c => (_change.reset === true ? c.id !== _change.id
+                : c.id !== _change.id || c.reset === true || c.key !== _change.key)), _change];
+        }
+        try {
+            let next = _data;
+            let latest = null;
+            try {
+                // 保存が無い（ほかのタブで消された・まだ 1 回も保存していない）ときは、空の中身に書き足す
+                latest = JSON.parse(localStorage.getItem(STORE_KEY)) ?? { v: 1, values: {} };
+            } catch {
+                latest = null;   // 壊れた中身が入っていたら、全部を書き直す
+            }
+            if (isChange(_change) && isObj(latest) && latest.v === 1 && isObj(latest.values)) {
+                const values = latest.values;
+                changes.forEach(c => {
+                    if (c.reset === true) {
+                        delete values[c.id];
+                    } else {
+                        values[c.id] = isObj(values[c.id]) ? values[c.id] : {};
+                        values[c.id][c.key] = c.value;
+                    }
+                });
+                next = { v: 1, values };
+            }
+            localStorage.setItem(STORE_KEY, JSON.stringify(next));
+            unsaved = [];
+        } catch {
+            // 保存できなくても、開いている間は動く。この変更は、次に保存できたときに書き足す
+            unsaved = changes.slice(-UNSAVED_MAX);
+        }
+    };
+
+    /**
+     * 順番を待っている書き込み。
+     * 「読む → 書き足す → 書く」の途中に、ほかのタブの書き込みが挟まらないよう、使えるブラウザでは Web Locks で 1 つずつにする
+     * （使えないとき＝http のページ・古いブラウザでは、その場で書く）。
+     * 順番が来る前にページを離れるときは、待たずに書く（変更を落とさないことを先にする）
+     */
+    const waiting = [];
+    const flushWaiting = () => waiting.splice(0).forEach(job => job());
+    window.addEventListener(`pagehide`, flushWaiting);
+
+    const localStore = {
         read() {
             try {
                 return JSON.parse(localStorage.getItem(STORE_KEY));
@@ -243,67 +324,76 @@
                 return null;
             }
         },
-        /**
-         * @param {object} _data   保存する全部（{ v: 1, values: { id: { key: 値 } } }）
-         * @param {object} _change 今回変わった所（{ id, key, value } か { id, reset: true }）。
-         *                         ほかのタブの変更を消さないよう、いま保存されている中身に、この 1 か所だけを書き足す
-         */
         write(_data, _change) {
+            waiting.push(() => commitLocal(_data, _change));
             try {
-                let next = _data;
-                let latest = null;
-                try {
-                    latest = JSON.parse(localStorage.getItem(STORE_KEY));
-                } catch {
-                    latest = null;   // 壊れた中身が入っていたら、全部を書き直す
-                }
-                if (isObj(_change) && typeof _change.id === `string` && ID_RE.test(_change.id)
-                    && isObj(latest) && latest.v === 1 && isObj(latest.values)) {
-                    const values = latest.values;
-                    if (_change.reset === true) {
-                        delete values[_change.id];
-                    } else if (typeof _change.key === `string` && KEY_RE.test(_change.key)) {
-                        values[_change.id] = isObj(values[_change.id]) ? values[_change.id] : {};
-                        values[_change.id][_change.key] = _change.value;
-                    }
-                    next = { v: 1, values };
-                }
-                localStorage.setItem(STORE_KEY, JSON.stringify(next));
+                // 順番が来たら、待っている分をまとめて書く（断られたときは、その場で書く）
+                navigator.locks.request(`${STORE_KEY}:write`, flushWaiting).then(undefined, flushWaiting);
             } catch {
-                // 保存できなくても、開いている間は動く
+                flushWaiting();
             }
         },
     };
-
+    let store = localStore;
     /** { カスタムjsの id: { 設定の key: 値 } } */
     let saved = Object.create(null);
 
     const isObj = _v => _v !== null && typeof _v === `object` && !Array.isArray(_v);
 
-    /** 保存先から読む（読めなければ null） */
-    const readStore = () => {
-        try {
-            return store.read();
-        } catch (e) {
-            console.error(`[launcher] 保存先から読めませんでした`, e);
-            return null;
+    /** 保存先から読んだ中身を、保存の控えの形にする（形が合わなければ空。読むと例外になる中身は、例外をそのまま投げる） */
+    const savedFrom = _data => {
+        const map = Object.create(null);
+        if (!isObj(_data) || _data.v !== 1 || !isObj(_data.values)) {
+            return map;
         }
-    };
-    const loadSaved = (_data = readStore()) => {
-        saved = Object.create(null);
-        const data = _data;
-        if (!isObj(data) || data.v !== 1 || !isObj(data.values)) {
-            return;
-        }
-        Object.keys(data.values).forEach(id => {
-            if (ID_RE.test(id) && isObj(data.values[id])) {
-                saved[id] = Object.assign(Object.create(null), data.values[id]);
+        Object.keys(_data.values).forEach(id => {
+            const values = _data.values[id];
+            if (ID_RE.test(id) && isObj(values)) {
+                map[id] = Object.assign(Object.create(null), values);
             }
         });
+        return map;
+    };
+    /** 保存先から読む（読めなければ空） */
+    const loadSaved = () => {
+        try {
+            saved = savedFrom(store.read());
+        } catch (e) {
+            console.error(`[launcher] 保存先から読めませんでした`, e);
+            saved = Object.create(null);
+        }
+    };
+    /**
+     * 既定の保存先を読み直す（ほかのタブで変えた設定を、画面を開いたときに拾う）。
+     * まだ書けていない変更があるときは、読み直さない（読み直すと、その変更が消える）。
+     * 差し替えた保存先は、読み直さない（渡し直すのは、差し替えた側の役目）
+     */
+    const reloadLocal = () => {
+        if (store !== localStore || waiting.length > 0 || unsaved.length > 0) {
+            return;
+        }
+        try {
+            const raw = localStorage.getItem(STORE_KEY);
+            const data = raw === null ? null : JSON.parse(raw);
+            // 消されていたら空に、決まった形ならその中身にする。ほかの形のときは、下の catch と同じで、いまの控えのまま
+            if (data === null || (isObj(data) && data.v === 1 && isObj(data.values))) {
+                saved = savedFrom(data);
+            }
+        } catch {
+            // 読めない・壊れているときは、いまの控えを使い続ける（次の保存で、全部を書き直す）
+        }
+    };
+    /** いまの保存の控えの写し（保存先があとで書く形でも、渡したあとの変更が混ざらないように） */
+    const savedCopy = () => {
+        const values = Object.create(null);
+        Object.keys(saved).forEach(id => {
+            values[id] = Object.assign(Object.create(null), saved[id]);
+        });
+        return { v: 1, values };
     };
     const writeSaved = _change => {
         try {
-            const done = store.write({ v: 1, values: saved }, _change);
+            const done = store.write(savedCopy(), _change);
             if (done !== null && typeof done === `object` && typeof done.then === `function`) {
                 done.then(undefined, e => console.error(`[launcher] 保存でエラー`, e));
             }
@@ -438,7 +528,8 @@
             return;
         }
         try {
-            render();
+            // 押している最中（つまみを動かしている途中など）に登録されたら、離してから作り直す
+            renderWhenFree();
         } catch (e) {
             console.error(`[launcher] 画面を作れませんでした`, e);
         }
@@ -588,7 +679,7 @@ button.sw:disabled { opacity: .55; }
 .opt[aria-checked="true"] { background: var(--accent-bg); border-color: var(--accent); color: var(--on-accent); }
 
 /* 決まった範囲の数 */
-.num { display: flex; align-items: center; gap: 6px; }
+.num { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .step { flex: none; min-width: 36px; min-height: 36px; padding: 0 6px; border: 1px solid var(--ctl-line); border-radius: 6px; background: var(--ctl); font-size: 16px; line-height: 1; }
 .step:hover:not(:disabled) { background: var(--ctl-hover); }
 .step:disabled { opacity: .4; }
@@ -631,11 +722,12 @@ button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
     const el = {};
     el.fab = h(`button`, { type: `button`, class: `fab tr`, onclick: () => openPanel() });
     el.fab.innerHTML = ICON;   // 決まった文字だけ（外から来た文字は入らない）
-    el.title = h(`b`);
+    el.title = h(`b`, { id: `title` });
     el.ver = h(`small`, { text: `launcher ${VERSION}` });
     el.close = h(`button`, { type: `button`, class: `x`, text: `×`, onclick: () => closePanel() });
     el.body = h(`div`, { class: `body`, tabindex: `-1` });
-    el.panel = h(`div`, { class: `panel`, role: `dialog` }, h(`div`, { class: `head` }, el.title, el.ver, el.close), el.body);
+    // 開いている間、後ろ（本体の画面）は幕で押せず、キーも渡さない。読み上げにも、そう伝える（本体の部品には手を入れない）
+    el.panel = h(`div`, { class: `panel`, role: `dialog`, 'aria-modal': `true`, 'aria-labelledby': `title` }, h(`div`, { class: `head` }, el.title, el.ver, el.close), el.body);
     let veilPressed = false;
     el.veil = h(`div`, {
         class: `veil`, hidden: true,
@@ -659,9 +751,18 @@ button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
     /** 開いている間に押されたキー（離したときも本体へ渡さない。開く前から押していたキーの離しは、本体へ渡す） */
     const heldKeys = new Set();
 
-    /** 画面の中で、キーボードで選べる部品（Tab で回る順） */
+    /** 画面の中で、キーボードで選べる部品（Tab で回る順。選択肢のまとまりは、選んでいる 1 つだけ） */
     const focusables = () => [el.close, ...el.body.querySelectorAll(`button, input`)]
-        .filter(e => !e.disabled && e.getClientRects().length > 0);
+        .filter(e => !e.disabled && e.tabIndex >= 0 && e.getClientRects().length > 0);
+
+    /** 選択肢のまとまりの中を、矢印キーで動く（動いた先を選ぶ。端まで行ったら反対の端へ） */
+    const ARROWS = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 };
+    const moveOption = (_from, _dir) => {
+        const group = [..._from.parentNode.querySelectorAll(`[role="radio"]`)];
+        const to = group[(group.indexOf(_from) + _dir + group.length) % group.length];
+        to.focus();
+        to.click();
+    };
 
     /**
      * 開いている間は、キーを本体のショートカットへ渡さない（Esc で閉じる・Tab は画面の中だけを回る）
@@ -707,6 +808,11 @@ button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
             closePanel();
             return;
         }
+        if (Object.hasOwn(ARROWS, ev.key) && shadow.activeElement?.getAttribute(`role`) === `radio`) {
+            ev.preventDefault();
+            moveOption(shadow.activeElement, ARROWS[ev.key]);
+            return;
+        }
         if (ev.key === `Tab`) {
             const list = focusables();
             const active = shadow.activeElement;
@@ -722,33 +828,43 @@ button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
     window.addEventListener(`keydown`, onKey, true);
     window.addEventListener(`keyup`, onKey, true);
     // ほかのウィンドウへ移ると、離しが届かない。押したままの覚えを残さない
-    window.addEventListener(`blur`, () => heldKeys.clear());
+    window.addEventListener(`blur`, () => {
+        heldKeys.clear();
+        releaseAll();
+    });
 
     /**
      * 指やマウスで押している間は、画面を作り直さない。
      * 押している部品が入れ替わると、その押しが無かったことになる（数字を打ったあと、ほかの部品を押して確定したときなど）。
      * 離して、その押しの処理が済んでから作り直す
      */
-    let pressing = false;
+    /** ランチャーの上で押している指・マウス（pointerId）。2 本の指で押しているとき、別の指を離しただけでは作り直さない */
+    const pressed = new Set();
     let renderWaiting = false;
     const renderWhenFree = () => {
-        if (pressing) {
+        if (pressed.size > 0) {
             renderWaiting = true;
         } else {
             render();
         }
     };
-    const released = () => {
-        if (!pressing) {
-            return;
-        }
-        pressing = false;
-        if (renderWaiting) {
+    /** 押している指・マウスが無くなったら、待たせていた作り直しをする（その間に次の押しが始まっていたら、また待つ） */
+    const flushRender = () => {
+        if (pressed.size === 0 && renderWaiting) {
             renderWaiting = false;
-            setTimeout(render, 0);   // 離したあとの click の処理が済んでから
+            setTimeout(renderWhenFree, 0);   // 離したあとの click の処理が済んでから
         }
     };
-    host.addEventListener(`pointerdown`, () => { pressing = true; }, true);
+    const released = ev => {
+        if (pressed.delete(ev.pointerId)) {
+            flushRender();
+        }
+    };
+    const releaseAll = () => {
+        pressed.clear();
+        flushRender();
+    };
+    host.addEventListener(`pointerdown`, ev => { pressed.add(ev.pointerId); }, true);
     window.addEventListener(`pointerup`, released, true);
     window.addEventListener(`pointercancel`, released, true);
 
@@ -819,13 +935,17 @@ button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
         };
     };
 
-    /** 決まった選択肢: 並んだボタンから選ぶ */
-    const selectEdit = (_p, _s) => h(`div`, { class: `opts`, role: `radiogroup`, 'aria-label': text(_s.label) },
-        _s.options.map((o, j) => h(`button`, {
-            type: `button`, class: `opt`, role: `radio`, text: text(o.label), 'data-fk': `${_p.id}:${_s.key}:o${j}`,
-            'aria-checked': String(o.value === _p.def.values[_s.key]),
-            onclick: () => { setValue(_p, _s, o.value); render(); },
-        })));
+    /** 決まった選択肢: 並んだボタンから選ぶ（Tab で止まるのは、選んでいる 1 つ。その中は矢印キーで動く） */
+    const selectEdit = (_p, _s) => {
+        // 選んでいるものが選択肢に無いとき（カスタムjsが values を直に書き換えた、など）は、最初の 1 つで Tab を受ける
+        const at = Math.max(_s.options.findIndex(o => o.value === _p.def.values[_s.key]), 0);
+        return h(`div`, { class: `opts`, role: `radiogroup`, 'aria-label': text(_s.label) },
+            _s.options.map((o, j) => h(`button`, {
+                type: `button`, class: `opt`, role: `radio`, text: text(o.label), 'data-fk': `${_p.id}:${_s.key}:o${j}`,
+                'aria-checked': String(o.value === _p.def.values[_s.key]), tabindex: j === at ? `0` : `-1`,
+                onclick: () => { setValue(_p, _s, o.value); render(); },
+            })));
+    };
 
     /** 決まった範囲の数: − ＋・つまみ・数字の欄 */
     const numberEdit = (_p, _s, _syncRow) => {
@@ -1013,8 +1133,9 @@ button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
         if (main !== undefined && _p.def.values[main.key] !== true) {
             return false;
         }
+        // 出す画面の決まったボタンは、その画面だと分かるときだけ（本体の画面が分からない版では、出さない）
         const pg = page();
-        return !Array.isArray(_a.screens) || pg === null || _a.screens.includes(pg);
+        return !Array.isArray(_a.screens) || (pg !== null && _a.screens.includes(pg));
     };
 
     const runAction = (_p, _a) => {
@@ -1024,10 +1145,15 @@ button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
             return;
         }
         closePanel();
+        const failed = e => console.error(`[launcher] ${_p.id} の ${_a.key} でエラー`, e);
         try {
-            _a.run();
+            // run() があとから失敗する形（async）でも、同じように記録する
+            const done = _a.run();
+            if (done !== null && typeof done === `object` && typeof done.then === `function`) {
+                done.then(undefined, failed);
+            }
         } catch (e) {
-            console.error(`[launcher] ${_p.id} の ${_a.key} でエラー`, e);
+            failed(e);
         }
     };
 
@@ -1096,6 +1222,9 @@ button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
         return h(`div`, { class: `item${open ? ` open` : ``}${ng !== `` || off ? ` dim` : ``}`, 'data-item': _p.id }, kids);
     };
 
+    /** 前に作ったときに広げていた所（{ plugin, setting }。開いた直後は null） */
+    let lastShowing = null;
+
     /** 画面を作り直す（開いているときだけ）。スクロールの位置と、キーボードで選んでいた部品は保つ */
     function render() {
         el.fab.title = text(T.open);
@@ -1139,8 +1268,16 @@ button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
         if (focus !== undefined) {
             [...el.body.querySelectorAll(`[data-fk]`)].find(e => e.dataset.fk === focus)?.focus({ preventScroll: true });
         }
-        // 広げた所が、一覧の外にはみ出さないようにする（一覧の中だけを送る。ページは動かさない）
-        const shown = (ui.setting !== null ? el.body.querySelector(`[data-edit]`) : null) ?? el.body.querySelector(`.item.open`);
+        // 広げた所が、一覧の外にはみ出さないようにする（一覧の中だけを送る。ページは動かさない）。
+        // 送るのは、新しく広げたときだけ。同じ所を広げたままの作り直しでは、いまの位置を保ち、選んでいる部品だけを見える所に置く
+        // （欄が一覧より長いとき、下のほうの選択肢を選ぶたびに、欄の頭へ戻さないため）
+        // 欄を畳んだとき（同じカスタムjsのまま、広げている設定が無くなった）も、位置を保つ
+        const moved = lastShowing === null || lastShowing.plugin !== ui.plugin
+            || (ui.setting !== null && lastShowing.setting !== ui.setting);
+        const shown = moved
+            ? (ui.setting !== null ? el.body.querySelector(`[data-edit]`) : null) ?? el.body.querySelector(`.item.open`)
+            : (el.body.contains(shadow.activeElement) ? shadow.activeElement : null);
+        lastShowing = { plugin: ui.plugin, setting: ui.setting };
         if (shown !== null) {
             const box = el.body.getBoundingClientRect();
             const r = shown.getBoundingClientRect();
@@ -1158,8 +1295,10 @@ button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
             return;
         }
         opened = true;
+        lastShowing = null;   // 開いたときは、広げている所を見える位置へ送る
         el.veil.hidden = false;
-        // 作品側の指定が後から置かれていても拾えるよう、開くたびに値を決め直す
+        // 作品側の指定が後から置かれていても、ほかのタブで設定を変えていても拾えるよう、開くたびに値を決め直す
+        reloadLocal();
         applyAll();
         fit();
         render();
@@ -1231,6 +1370,10 @@ button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
     const tick = () => {
         const frame = document.getElementById(`canvas-frame`);
         if (frame === null) {
+            // 枠が無くなったら、開いていた画面は閉じる（開いたままだと、見えないのにキーを本体へ渡さない）
+            if (opened) {
+                closePanel();
+            }
             return;
         }
         if (host.parentNode !== frame) {
@@ -1257,7 +1400,7 @@ button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
             dodgeTimer = setTimeout(dodge, 600);
         }
         // 枠が動いた・大きさが変わった（疑似全画面・窓の大きさ）ときも、重なりを見直す
-        const placed = `${frame.style.transform}|${frame.style.left}|${frame.style.top}|${frame.style.width}|${innerWidth}|${innerHeight}`;
+        const placed = `${frame.style.transform}|${frame.style.left}|${frame.style.top}|${frame.style.width}|${frame.offsetHeight}|${innerWidth}|${innerHeight}`;
         if (placed !== lastPlaced) {
             lastPlaced = placed;
             fit();
@@ -1336,6 +1479,11 @@ button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
         /**
          * 保存先を差し替える（拡張機能やユーザースクリプトが、どのサイトでも同じ設定にするための口）
          *   { read() → 全部, write(全部, 今回変わった所) }。同じ保存先をもう一度渡すと、読み直して値を決め直す
+         *   read() は、その場で結果を返すこと（Promise を返す保存先は受け付けない）。
+         *   read() が返すのは、write() で受け取った最新の全部（まだ確定していない分も含める）。
+         *   同じ保存先を渡し直すと、ランチャーは read() の中身で値を置き換えるので、含めないと、確定を待っている変更が消える
+         *   write() は、呼ばれた順に確定させること。ランチャーは write() の完了を待たない
+         *   （Promise を返してもよいが、失敗を記録するだけ。あとの書き込みが先に確定すると、古い値が残る）
          */
         setStore(_store) {
             if (!isObj(_store) || typeof _store.read !== `function` || typeof _store.write !== `function`) {
@@ -1343,21 +1491,36 @@ button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
             }
             // 先に新しい保存先から読む。読めなければ、いまの保存先と値をそのまま使い続ける
             let data;
+            let later;
             try {
                 data = _store.read();
+                later = data !== null && typeof data === `object` && typeof data.then === `function`;
             } catch (e) {
                 console.error(`[launcher] 新しい保存先から読めなかったので、差し替えませんでした`, e);
                 return false;
             }
             // 読んだ結果があとから届く形（Promise）の保存先は、受け付けない（空として読むと、全部が既定に戻る）
-            if (data !== null && typeof data === `object` && typeof data.then === `function`) {
+            if (later) {
                 console.error(`[launcher] read() があとから結果を返す保存先は、使えません`);
+                try {
+                    data.then(undefined, () => { /* 断った保存先の失敗は、ページへ漏らさない */ });
+                } catch {
+                    // then が例外を投げても、差し替えないだけ
+                }
+                return false;
+            }
+            // 読んだ中身を控えの形にできてから、差し替える（中身を読むと例外になる保存先でも、いまの保存先と値を残す）
+            let next;
+            try {
+                next = savedFrom(data ?? null);
+            } catch (e) {
+                console.error(`[launcher] 新しい保存先の中身を読めなかったので、差し替えませんでした`, e);
                 return false;
             }
             store = _store;
-            loadSaved(data ?? null);
+            saved = next;
             applyAll();
-            render();
+            renderWhenFree();   // 押している最中（つまみを動かしている途中など）なら、離してから作り直す
             return true;
         },
     };
