@@ -10,7 +10,7 @@ Each custom JS lives in its own folder named after its purpose. See the "Wiki" l
 
 <!-- The table below is updated automatically. Do not edit inside the CUSTOM-JS-LIST markers by hand. -->
 <!-- CUSTOM-JS-LIST:START -->
-| Name | Type | Summary | Supported versions | Author | Last updated | Details |
+| Name | Type | Summary | Supported versions | Author | Latest version | Details |
 |---|---|---|---|---|---|---|
 | [_launcher](./_launcher) | 基盤, js | カスタムJSの設定とボタンを、1 つの画面にまとめる基盤です。対応したカスタムJSは、設定を「宣言」（データ）として書いておくだけで、遊ぶ人がランチャーの画面から設定を変えられます。 | v27.8.1 以降 | [@kwbredda3](https://github.com/kwbredda3) | [2026-11-24](https://github.com/cwtickle/danoniplus-plugins/releases/tag/2026-11-24) ([ZIP](https://github.com/cwtickle/danoniplus-plugins/releases/download/2026-11-24/_launcher-2026-11-24.zip)) | [Wiki](https://github.com/cwtickle/danoniplus-plugins/wiki/launcher) |
 <!-- CUSTOM-JS-LIST:END -->
@@ -30,7 +30,7 @@ Each custom JS lives in its own folder named after its purpose. See the "Wiki" l
    - New: `add: description`
    - Update: `update: description` / `fix: description` / `refactor: description`, etc. (anything other than `add:` and `chore:`; see the notes below for `chore:`)
 3. For an `add:` PR, fill in the PR template headings (Overview / Supported Versions / Installation / Configuration / Notes / Screenshots, each written bilingually — keep the headings as they are). When merged, the wiki page and this list are created automatically.
-4. For an update PR, the PR title is appended to the page's update history in the wiki, and the "Last updated" column here is refreshed.
+4. For an update PR, the PR title is appended to the page's update history in the wiki, and the "Latest version" column here is refreshed (links to the release tag and the zip).
 
 Notes:
 

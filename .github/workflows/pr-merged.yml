@@ -2,7 +2,7 @@ name: Publish plugin docs
 
 # マージ時に、PRの内容を wiki ページと README の一覧へ反映する。
 #   add:        wiki/<フォルダ名>.md を作成し、README.md / README.en.md の一覧へ行を追加
-#   それ以外:   wiki ページの「更新履歴」へ追記し、README の最終更新日を更新
+#   それ以外:   wiki ページの「更新履歴」へ追記し、README の最新バージョンを更新
 #
 # pull_request_target を使うのは、フォークからのPRでも書き込み権限のトークンを使うため。
 # PR側のコードはチェックアウトしない(ベースブランチ=マージ済みのコードだけを実行する)。

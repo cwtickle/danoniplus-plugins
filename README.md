@@ -10,7 +10,7 @@ English: [README.en.md](./README.en.md)
 
 <!-- 下の表は自動更新されます。CUSTOM-JS-LIST マーカーの内側は手動で編集しないでください。 -->
 <!-- CUSTOM-JS-LIST:START -->
-| 用途名 | 種別 | 概要 | 対応バージョン | 作者 | 最終更新日 | 詳細 |
+| 用途名 | 種別 | 概要 | 対応バージョン | 作者 | 最新バージョン | 詳細 |
 |---|---|---|---|---|---|---|
 | [_launcher](./_launcher) | 基盤, js | カスタムJSの設定とボタンを、1 つの画面にまとめる基盤です。対応したカスタムJSは、設定を「宣言」（データ）として書いておくだけで、遊ぶ人がランチャーの画面から設定を変えられます。 | v27.8.1 以降 | [@kwbredda3](https://github.com/kwbredda3) | [2026-11-24](https://github.com/cwtickle/danoniplus-plugins/releases/tag/2026-11-24) ([ZIP](https://github.com/cwtickle/danoniplus-plugins/releases/download/2026-11-24/_launcher-2026-11-24.zip)) | [Wiki](https://github.com/cwtickle/danoniplus-plugins/wiki/launcher) |
 <!-- CUSTOM-JS-LIST:END -->
@@ -30,7 +30,7 @@ English: [README.en.md](./README.en.md)
    - 新規追加: `add: 説明`
    - 更新: `update: 説明` / `fix: 説明` / `refactor: 説明` など(`add:` と `chore:` 以外。`chore:` は下の注意を参照)
 3. `add:` のPRは、PRテンプレートの見出し(概要 / 対応バージョン / 導入方法 / 設定項目 / 注意点 / スクリーンショット。日英併記なので、見出しは書き換えずそのまま使ってください)を埋めてください。マージすると、wikiのページとこの一覧が自動で作られます。
-4. 更新のPRは、マージするとwikiページの「更新履歴」にPRタイトルが追記され、この一覧の最終更新日が更新されます。
+4. 更新のPRは、マージするとwikiページの「更新履歴」にPRタイトルが追記され、この一覧の最新バージョン(リリースタグとzipへのリンク)が更新されます。
 
 注意:
 
