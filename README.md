@@ -12,7 +12,7 @@ English: [README.en.md](./README.en.md)
 <!-- CUSTOM-JS-LIST:START -->
 | 用途名 | 種別 | 概要 | 対応バージョン | 作者 | 最終更新日 | 詳細 |
 |---|---|---|---|---|---|---|
-| [_launcher](./_launcher) | 基盤, js | カスタムJSの設定とボタンを、1 つの画面にまとめる基盤です。対応したカスタムJSは、設定を「宣言」（データ）として書いておくだけで、遊ぶ人がランチャーの画面から設定を変えられます。 | v27.8.1 以降 | [@kwbredda3](https://github.com/kwbredda3) | 2026-11-24 | [Wiki](https://github.com/cwtickle/danoniplus-plugins/wiki/launcher) |
+| [_launcher](./_launcher) | 基盤, js | カスタムJSの設定とボタンを、1 つの画面にまとめる基盤です。対応したカスタムJSは、設定を「宣言」（データ）として書いておくだけで、遊ぶ人がランチャーの画面から設定を変えられます。 | v27.8.1 以降 | [@kwbredda3](https://github.com/kwbredda3) | [2026-11-24](https://github.com/cwtickle/danoniplus-plugins/releases/tag/2026-11-24) ([ZIP](https://github.com/cwtickle/danoniplus-plugins/releases/download/2026-11-24/_launcher-2026-11-24.zip)) | [Wiki](https://github.com/cwtickle/danoniplus-plugins/wiki/launcher) |
 <!-- CUSTOM-JS-LIST:END -->
 
 ## フォルダ構成

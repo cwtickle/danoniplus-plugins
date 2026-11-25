@@ -59,15 +59,15 @@ MARK_END = "<!-- CUSTOM-JS-LIST:END -->"
 
 HEADERS = {
     "ja": (
-        "| 用途名 | 種別 | 概要 | 対応バージョン | 作者 | 最終更新日 | 詳細 |",
+        "| 用途名 | 種別 | 概要 | 対応バージョン | 作者 | 最新バージョン | 詳細 |",
         "|---|---|---|---|---|---|---|",
     ),
     "en": (
-        "| Name | Type | Summary | Supported versions | Author | Last updated | Details |",
+        "| Name | Type | Summary | Supported versions | Author | Latest version | Details |",
         "|---|---|---|---|---|---|---|",
     ),
 }
-COL_TYPE, COL_UPDATED = 1, 5  # 一覧表の列位置(0始まり)
+COL_TYPE, COL_LATEST = 1, 5  # 一覧表の列位置(0始まり)
 
 JST = timezone(timedelta(hours=9))
 DATE_TAG_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")  # 日次リリースのタグ(YYYY-MM-DD)
@@ -272,6 +272,11 @@ def cell(text: str) -> str:
 def escape_link_text(text: str) -> str:
     return re.sub(r"([\[\]])", r"\\\1", text.strip())
 
+def latest_cell(repo: str, folder: str, date: str) -> str:
+    """最新バージョン列: [タグ](リリースページ) ([ZIP](Assetsの直リンク))。
+    最終更新日 = その日の日次リリースのタグ。zipはその日に変更があったフォルダに必ず付く(daily-release.yml)。"""
+    base = f"https://github.com/{repo}/releases"
+    return f"[{date}]({base}/tag/{date}) ([ZIP]({base}/download/{date}/{folder}-{date}.zip))"
 
 def folder_types(folder: str) -> str:
     p = Path(folder)
@@ -346,7 +351,7 @@ def build_row(folder: str, *, summary: str, versions: str, types: str,
         cell(summary) or "-",
         cell(versions) or "-",
         author_cell,
-        date,
+        latest_cell(repo, folder, date),
         f"[Wiki](https://github.com/{repo}/wiki/{wiki})",
     ]
     return "| " + " | ".join(cells) + " |"
@@ -362,8 +367,9 @@ def row_name(row: str) -> str | None:
 
 
 def update_readme(path: str, lang: str, folder: str, *, new_row: str | None = None,
-                  types: str = "-", date: str = "", replace_existing: bool = True) -> bool:
-    """マーカー内の一覧表を更新する。new_row があれば追加/置換、なければ種別と最終更新日のみ更新。
+                  types: str = "-", date: str = "", replace_existing: bool = True,
+                  repo: str = "") -> bool:
+    """マーカー内の一覧表を更新する。new_row があれば追加/置換、なければ種別と最新バージョン(タグ・zipリンク)のみ更新。
 
     replace_existing=False のときは、既に行がある用途の new_row を反映せず、そのまま残す(手動翻訳などの保護)。
     """
@@ -393,17 +399,17 @@ def update_readme(path: str, lang: str, folder: str, *, new_row: str | None = No
         else:
             log_warning(f"{path} には `{folder}` の行が既にあるため、そのまま残します(手動編集の保護)。")
             return False
-        rows.sort(key=lambda r: (row_name(r) or r).casefold())
+        rows.sort(key=lambda r: (not is_infra(row_name(r) or ""), (row_name(r) or r).casefold()))
     else:
         if idx is None:
-            log_warning(f"{path} に `{folder}` の行がないため、最終更新日を更新できません。")
+            log_warning(f"{path} に `{folder}` の行がないため、最新バージョンを更新できません。")
             return False
         cells = split_row(rows[idx])
-        if len(cells) <= COL_UPDATED:
+        if len(cells) <= COL_LATEST:
             log_warning(f"{path} の `{folder}` の行の列数が想定と異なるため更新しません。")
             return False
         cells[COL_TYPE] = cell(types) or "-"
-        cells[COL_UPDATED] = date
+        cells[COL_LATEST] = latest_cell(repo, folder, date)
         rows[idx] = "| " + " | ".join(cells) + " |"
 
     new_text = text[:s + len(MARK_START)] + "\n" + "\n".join(header + rows) + "\n" + text[e:]
@@ -530,7 +536,7 @@ def cmd_publish(args: argparse.Namespace) -> int:
             page.write_text(f"# {folder}\n\n## {HISTORY_HEADING}\n\n{entry}\n", encoding="utf-8")
 
         for lang, path in (("ja", args.readme), ("en", args.readme_en)):
-            changed = update_readme(path, lang, folder, new_row=None, types=types, date=date)
+            changed = update_readme(path, lang, folder, new_row=None, types=types, date=date, repo=env["repo"])
             print(f"{path}: {'更新' if changed else '変更なし/スキップ'}")
     return 0
 
