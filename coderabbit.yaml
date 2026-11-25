@@ -19,10 +19,9 @@ reviews:
         このリポジトリのJSは、Dancing☆Onigiri (CW Edition) = danoniplus の「カスタムJS」です。
         ブラウザ上で danoniplus 本体のスクリプトの後に読み込まれる単独のスクリプトで、danoniplus 本体が定義する
         グローバル変数・関数(g_ で始まるものやファイルのトップレベルにいる関数など)を前提に動作します。
-        - danoniplus 本体のコード(複数のJSファイルに分割されています)はこのリポジトリに含まれません。参照している識別子について
-          「未定義」「存在しない関数」といった指摘はしないでください。danoniplus側に存在するか
-          確証が持てない場合は、断定せず「danoniplus側の定義を確認してください」程度に留めてください。
-        - import/export や require など、モジュール・Node.js前提の書き方になっていないか確認してください。
+        - danoniplus 本体は関連リポジトリとして参照できます。参照している識別子・関数の
+          存在や使い方は、本体側のコードで確認してください。
+          確認できない場合は断定せず、「danoniplus側の定義を確認してください」に留めてください。        - import/export や require など、モジュール・Node.js前提の書き方になっていないか確認してください。
         - グローバルに新しい名前を追加する場合は、danoniplus本体や他のカスタムJSと衝突しないか
           (接頭辞・名前空間)を確認してください。
         - PR本文「対応バージョン」に書かれたバージョンで使えない機能・APIを使っていないか、
@@ -61,9 +60,9 @@ reviews:
         見出し(## ...)は .github/scripts/plugin_tool.py の REQUIRED_HEADINGS と完全一致している必要があります。
         見出しを変更している場合は、両方が揃っているか確認してください。
 
-# danoniplus 本体を「関連リポジトリ」としてリンクできるようになったら、コメントを外して有効化します。
-# (同じアカウントの公開リポジトリで、CodeRabbit GitHub App がインストール済みであること)
-# knowledge_base:
-#   linked_repositories:
-#     - repository: cwtickle/danoniplus
-#       instructions: danoniplus 本体(複数のJSファイルに分割されています)。カスタムJSが参照するグローバル変数・関数の定義元。
+knowledge_base:
+  linked_repositories:
+    - repository: cwtickle/danoniplus
+      instructions: |
+        danoniplus 本体(複数のJSファイルに分割されています)。カスタムJSが参照するグローバル変数・関数の定義元。
+        カスタムJSが本体のAPIを正しく使っているか、「対応バージョン」で使えるAPIかを確認する際に参照する。
